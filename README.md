@@ -22,10 +22,10 @@ sequenceDiagram
     Helper->>Google: Exchange code with PKCE verifier
     Google-->>Helper: ID token and refresh token
     Claude->>Helper: apiKeyHelper: token
-    Helper->>Google: Refresh when needed; fetch verification keys
+    Helper->>Google: Refresh when needed and fetch verification keys
     Helper-->>Claude: Verified ID token only
     Claude->>Kong: Request with Google ID token
-    Kong->>Kong: Verify token; resolve approved Consumer; authorize model
+    Kong->>Kong: Verify token, resolve approved Consumer and authorize model
     Kong->>Model: Request with upstream credentials
     Model-->>Claude: Response through gateway
 ```
