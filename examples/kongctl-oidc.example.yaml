@@ -1,0 +1,50 @@
+# AI Gateway v2: merge these fields into the existing gateway declaration.
+# This is an EXCERPT, not a standalone sync file. Keep existing models/providers/policies.
+# Replace the gateway ref, Desktop client ID and VERIFIED Google user sub first.
+# Google OAuth app audience must be Internal; onboard only approved organization users.
+ai_gateways:
+  - ref: YOUR-EXISTING-GATEWAY-REF
+    auth_strategies:
+      - ref: google-desktop-oidc
+        ai_gateway: !ref YOUR-EXISTING-GATEWAY-REF
+        name: google-desktop-oidc
+        display_name: Google Cloud Identity desktop SSO
+        type: openid-connect
+        config:
+          issuer: https://accounts.google.com
+          client_id:
+            - YOUR-DESKTOP-CLIENT-ID.apps.googleusercontent.com
+          audience_required:
+            - YOUR-DESKTOP-CLIENT-ID.apps.googleusercontent.com
+          auth_methods: [bearer]
+          ssl_verify: true
+          hide_credentials: true
+          # Also strip/redact x-api-key: Claude Code sends the token in both headers.
+          credential_claim: [sub]
+          consumer_claims:
+            - [sub]
+          consumer_by: [custom_id]
+          consumer_optional: false
+          # No consumer_groups_claim: membership is maintained in Kong below.
+    consumers:
+      - ref: google-user-example
+        ai_gateway: !ref YOUR-EXISTING-GATEWAY-REF
+        name: google-user-example
+        display_name: Approved organization user
+        custom_id: "REPLACE-WITH-VERIFIED-GOOGLE-SUB"
+        type: oauth
+    consumer_groups:
+      - ref: claude-standard-users
+        ai_gateway: !ref YOUR-EXISTING-GATEWAY-REF
+        name: claude-standard-users
+        display_name: Claude standard users
+        consumers:
+          - !ref google-user-example#name
+# On EVERY protected existing model, merge:
+# access:
+#   auth_strategies:
+#     - !ref google-desktop-oidc
+#   acls:
+#     allow:
+#       - claude-standard-users
+# Attach existing model/Consumer Group policies for routing and rate limiting.

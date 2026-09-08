@@ -1,0 +1,11 @@
+{
+  "apiKeyHelper": "\"/ABS/PATH/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://gateway.example.com/v1/claude",
+    "GOOGLE_CLAUDE_AUTH_MODE": "oauth",
+    "GOOGLE_CLAUDE_CLIENT_FILE": "/ABS/PATH/client_secret_desktop.json",
+    "GOOGLE_CLAUDE_DOMAINS": "example.com",
+    "GOOGLE_CLAUDE_ACCOUNT": "user@example.com",
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "300000"
+  }
+}

@@ -1,0 +1,72 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "claude-sso-helper-google-cloud-identity"
+version = "0.1.0"
+description = "Google Cloud Identity authentication helper for Claude Code through Kong gateways"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Operating System :: MacOS",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "google-auth[requests]>=2.40,<3",
+    "requests>=2.32.4,<3",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2.2,<2",
+    "cryptography>=45",
+    "pytest>=8.3,<10",
+    "ruff>=0.11,<1",
+]
+
+[project.scripts]
+google-claude-auth = "google_claude_auth.auth:main"
+google-claude-verify-gateway = "google_claude_auth.verify_gateway:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/google_claude_auth"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "/src",
+    "/tests",
+    "/docs",
+    "/examples",
+    "/pyproject.toml",
+    "/README.md",
+    "/LICENSE",
+    "/CONTRIBUTING.md",
+    "/SECURITY.md",
+]
+
+[tool.pytest.ini_options]
+minversion = "8.3"
+testpaths = ["tests"]
+addopts = ["--import-mode=importlib", "--strict-config", "--strict-markers"]
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "B"]
+
+[tool.ruff.format]
+docstring-code-format = true
