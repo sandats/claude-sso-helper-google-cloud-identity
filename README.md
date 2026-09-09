@@ -37,6 +37,7 @@ The gateway is an explicitly configured relying party for the dedicated Google O
 - macOS or Linux, Python 3.10+, and a browser on the same computer as the helper. Native Windows and remote/headless login are not supported.
 - A Google Cloud project under the intended Workspace / Cloud Identity organization, an **Internal** OAuth app, and a **Desktop app** client JSON. See [Google's audience settings](https://support.google.com/cloud/answer/15549945?hl=en).
 - Claude Code with `apiKeyHelper` support and an HTTPS gateway exposing the Anthropic Messages API.
+- An existing Konnect AI Gateway v2 **CP (Control Plane), Model (AI Model), and Provider (AI Model Provider)**, with valid upstream credentials, the Model linked to its Provider, and a connected, running DP (Data Plane). Verify model requests through the gateway before adding SSO. This project does not provision these resources; see the [gateway prerequisites](docs/SETUP-GUIDE.md#prerequisites).
 - A gateway deployment that can validate Google OIDC credentials and enforce user access. The bundled example targets Kong AI Gateway v2; the conventional [Kong OIDC plugin requires Enterprise](https://developer.konghq.com/plugins/openid-connect/). This repository does not include gateway software, entitlements or model access.
 
 ## Quick start
@@ -58,7 +59,7 @@ export CLAUDE_CODE_API_KEY_HELPER_TTL_MS='300000'
 .venv/bin/google-claude-auth status
 ```
 
-`status` shows verified identity claims, never the token. Have the gateway administrator verify and enroll the user's `sub` under the approved-user policy. Follow the [setup guide](docs/SETUP-GUIDE.md) to configure the gateway and merge [claude-settings.example.json](examples/claude-settings.example.json) into Claude Code settings. Replace every example path, account, domain and URL. Keep terminal and Claude Code helper settings consistent so they use the same token cache.
+`status` shows verified identity claims, never the token. Have the gateway administrator verify and enroll the user's `sub` under the approved-user policy. Follow the [setup guide](docs/SETUP-GUIDE.md) to configure the gateway. Section 4 provides [field-by-field editing and installation instructions](docs/SETUP-GUIDE.md#4-configure-claude-code) for [claude-settings.example.json](examples/claude-settings.example.json), including how to preserve existing settings. Replace every example path, account, domain and URL. Keep terminal and Claude Code helper settings consistent so they use the same token cache.
 
 Claude Code runs `token` without opening a browser. Its helper output must contain only the credential, and its default cache lifetime is five minutes. See [Claude Code gateway authentication](https://code.claude.com/docs/en/llm-gateway-connect#rotate-credentials-with-apikeyhelper).
 

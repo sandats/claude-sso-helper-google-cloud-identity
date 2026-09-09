@@ -1,6 +1,11 @@
 # AI Gateway v2: merge these fields into the existing gateway declaration.
 # This is an EXCERPT, not a standalone sync file. Keep existing models/providers/policies.
-# Replace the gateway ref, Desktop client ID and VERIFIED Google user sub first.
+# Before running kongctl, export CLIENT_ID, GOOGLE_USER_SUB and OIDC_CACHE_TOKENS_SALT.
+# See docs/SETUP-GUIDE.md or docs/SETUP-GUIDE.ja.md for commands.
+# CLIENT_ID: installed.client_id from the dedicated Desktop OAuth client JSON.
+# GOOGLE_USER_SUB: Google sub of an independently verified, approved organization user.
+# OIDC_CACHE_TOKENS_SALT: stable random value for this auth strategy; reuse on reapply.
+# Replace YOUR-EXISTING-GATEWAY-REF with the ref in your existing declaration.
 # Google OAuth app audience must be Internal; onboard only approved organization users.
 ai_gateways:
   - ref: YOUR-EXISTING-GATEWAY-REF
@@ -13,12 +18,13 @@ ai_gateways:
         config:
           issuer: https://accounts.google.com
           client_id:
-            - YOUR-DESKTOP-CLIENT-ID.apps.googleusercontent.com
+            - !env CLIENT_ID
           audience_required:
-            - YOUR-DESKTOP-CLIENT-ID.apps.googleusercontent.com
+            - !env CLIENT_ID
           auth_methods: [bearer]
           ssl_verify: true
           hide_credentials: true
+          cache_tokens_salt: !env OIDC_CACHE_TOKENS_SALT
           # Also strip/redact x-api-key: Claude Code sends the token in both headers.
           credential_claim: [sub]
           consumer_claims:
@@ -31,7 +37,7 @@ ai_gateways:
         ai_gateway: !ref YOUR-EXISTING-GATEWAY-REF
         name: google-user-example
         display_name: Approved organization user
-        custom_id: "REPLACE-WITH-VERIFIED-GOOGLE-SUB"
+        custom_id: !env GOOGLE_USER_SUB
         type: oauth
     consumer_groups:
       - ref: claude-standard-users

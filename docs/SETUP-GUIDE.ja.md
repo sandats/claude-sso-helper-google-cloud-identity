@@ -11,8 +11,19 @@ Google Workspace / Cloud Identityの組織アカウントでログインし、Go
 - macOSまたはLinux、Python 3.10以上、同じ端末上のブラウザ。
 - 対象のWorkspace / Cloud Identity組織配下にあるGoogle Cloudプロジェクト。
 - **Internal**のOAuthアプリと、**Desktop app**型クライアントのJSON。
-- `apiKeyHelper`を利用できるClaude Codeと、Anthropic Messages API形式で接続できるHTTPSのGateway。上流のモデルと資格情報はあらかじめ設定します。
+- `apiKeyHelper`を利用できるClaude Codeと、Anthropic Messages API形式で接続できるHTTPSのGateway。
 - Google OIDC認証とユーザー認可を利用できるKong環境。同梱例はAI Gateway v2向けです。通常の[Kong OIDCプラグインはEnterprise機能](https://developer.konghq.com/plugins/openid-connect/)です。このOSSにGateway製品の利用権やモデルAPI利用権は含まれません。
+
+**この手順を始める前に、対象環境のCP・Model・Providerが作成・設定済みであることが必須です。** Gateway管理者は次の状態を確認してください。
+
+| 既存リソース | 必要な状態 |
+| --- | --- |
+| CP（Control Plane） | KonnectのAI Gateway v2のCPが存在し、管理者が対象組織・リージョンの設定を参照・更新できる |
+| Provider（AI Model Provider） | CP配下に上流LLMへの接続先と有効な認証情報が設定され、対象モデルの利用権がある |
+| Model（AI Model） | CP配下に利用するモデルが存在し、上記Providerへ紐付いている。Claude Codeから指定するモデル名が決まっている |
+| DP（Data Plane）と接続先URL | CPへ接続したDPが稼働し、利用者の端末からHTTPSで到達できる。既存の認証方式でAnthropic Messages API形式のモデル呼び出しを確認済み |
+
+本ガイドでは、この既存環境へGoogle SSOを追加します。CP・Model・Provider・DPの新規構築は含みません。未構築の場合は先に[Kong AI Gatewayのセットアップ](https://developer.konghq.com/ai-gateway/)を完了してください。管理者は第3章で使用する既存のkongctl YAMLを用意し、利用者へ第4章で設定する**GatewayのベースURLと利用可能なモデル名**を案内します。ベースURLはモデルへのリクエスト先であり、Konnectの管理API URLではありません。
 
 Windowsネイティブ、SSH先、Cloud Shell、別端末のブラウザを使うログインには対応していません。以下はリポジトリのルートで実行し、`example.com`、アカウント、パス、Gateway URLを置き換えます。
 
@@ -61,19 +72,109 @@ export CLAUDE_CODE_API_KEY_HELPER_TTL_MS='300000'
 
 ## 3. Kongの認証と認可を設定する
 
-[kongctl-oidc.example.yaml](../examples/kongctl-oidc.example.yaml)は、既存の**AI Gateway v2宣言へマージする部分設定例**です。モデルやプロバイダは含みません。単体でsyncに渡さず、既存の反映手順に沿って差分を確認します。
+この章は**Gateway管理者**が実施します。[前提](#前提)のCP・Model・Providerと稼働中のDPを用意したうえで、[kongctl](https://developer.konghq.com/kongctl/)をインストールし、対象のKonnect組織・リージョンへ接続できる状態にします。そのGatewayを管理している既存のkongctl YAMLファイルが必要です。[kongctl-oidc.example.yaml](../examples/kongctl-oidc.example.yaml)は、そのファイルへ組み込む**部分設定例**です。モデルやプロバイダを作る設定は含みません。
 
-- `issuer`をGoogleにし、署名と期限を検証します。`client_id`と`audience_required`に今回のDesktopクライアントIDを設定します。
-- `auth_methods: [bearer]`、`consumer_optional: false`で未登録ユーザーを拒否します。
-- `consumer_claims: [[sub]]`、`consumer_by: [custom_id]`を使い、承認したユーザーのGoogle `sub`をConsumerの`custom_id`へ登録します。
-- 保護する**すべてのモデル**にauth strategyとグループACLを設定します。上流資格情報、既存モデル、レート制限の設定を保持します。
+### 3.1. 設定するものを確認する
+
+Kongでは「誰からのリクエストか」の認証と、「そのユーザーがモデルを使えるか」の認可を次の設定で行います。
+
+| 設定 | 役割 | 同梱例の名前 |
+| --- | --- | --- |
+| Auth strategy（認証方式） | Google ID tokenの署名・期限と、今回のアプリ向けのトークンかを検証する | `google-desktop-oidc` |
+| Consumer（利用者） | Googleのユーザー識別子`sub`を`custom_id`へ登録し、利用を許可するユーザーを識別する | `google-user-example` |
+| Consumer Group（利用者グループ） | Consumerをまとめ、モデルへのアクセス許可に使う | `claude-standard-users` |
+| モデルの`access` | 使用する認証方式と、アクセスを許可するグループを指定する | 保護する既存モデルごとに設定 |
+
+この例は、Google ID tokenの`sub`から登録済みConsumerを探し、そのConsumerが許可グループに所属しているかを確認する構成です。認証方式を作るだけではモデルは保護されないため、3.3でモデルにも紐付けます。
+
+### 3.2. 環境変数に値を設定する
+
+`kongctl`を実行するターミナルで、次の値を設定します。以下の値は例なので、自分の環境の値へ置き換えてください。
+
+| 環境変数 | 設定する値・取得元 |
+| --- | --- |
+| `CLIENT_ID` | 第1章でダウンロードしたDesktop OAuthクライアントJSONの`installed.client_id`。第2章の`status`の`aud`と同じ値 |
+| `GOOGLE_USER_SUB` | 利用を承認したユーザーのGoogle `sub`。第2章の`status`で確認できるが、登録前に管理者による本人・組織所属の確認が必要 |
+| `OIDC_CACHE_TOKENS_SALT` | KongのOIDCキャッシュ用の固定値。認証方式の新規作成時に一度生成し、再適用時も同じ値を使う |
+| `KONG_CONFIG` | 対象Gatewayを管理している既存のkongctl YAMLファイルのパス。3.3でこのファイルを編集する |
+
+```bash
+export CLIENT_ID='123456789012-example.apps.googleusercontent.com'
+export GOOGLE_USER_SUB='123456789012345678901'
+export KONG_CONFIG='/absolute/path/to/your-existing-kongctl.yaml'
+
+# 新規作成時のみ生成する。管理者の保管先に保存し、次回は同じ値を設定する
+export OIDC_CACHE_TOKENS_SALT="$(openssl rand -hex 32)"
+```
+
+`cache_tokens_salt`はAI Gateway v2のOIDC認証方式で必要なキャッシュキー生成用の値です。Googleのclient secretとは別の値で、`!env OIDC_CACHE_TOKENS_SALT`から設定します。既存の認証方式を更新する場合は、新しく生成せず保管済みの値を使ってください。[Kong AI Auth Strategies](https://developer.konghq.com/ai-gateway/entities/ai-auth-strategy/)
+
+同梱YAMLは次のように`!env`で参照します。**YAML内のクライアントIDや`custom_id`を書き換える必要はありません。** `client_id`は使用するOAuthクライアント、`audience_required`は受け入れるID tokenの`aud`を指定し、この構成では両方に同じ`CLIENT_ID`を使います。
+
+```yaml
+client_id:
+  - !env CLIENT_ID
+audience_required:
+  - !env CLIENT_ID
+```
+
+Consumerの`custom_id`も`!env GOOGLE_USER_SUB`から読み込みます。これらはkongctlが読み込む変数なので、Claude Codeの`settings.json`に追加する必要はありません。別のターミナルやCIで実行する場合も、その実行環境に設定してください。`!env`は未設定ならエラーになりますが、空文字は許されるため、3.4のコマンドで空の値も確認します。[kongctlの環境変数参照](https://developer.konghq.com/kongctl/declarative/#loading-values-from-environment-variables)
+
+管理者はユーザーのGoogle署名と組織所属を独立して検証したうえでConsumerを登録します。ユーザーが送った`status`出力のコピーだけを本人確認の証拠にはできません。
+
+### 3.3. 既存のGateway設定へ組み込む
+
+`KONG_CONFIG`で指定したファイルをエディタで開き、次を行います。`ref`はYAML内のリソースを識別する名前で、`!ref`はそのリソースへの参照です。Konnectが発行するUUIDとは異なります。
+
+1. 既存の`ai_gateways`から対象Gatewayの`ref`を確認し、同梱例にあるすべての`YOUR-EXISTING-GATEWAY-REF`をその値に合わせます。
+2. 同梱例の`auth_strategies`、`consumers`、`consumer_groups`の各項目を、そのGatewayの下に追加します。同じキーが既にある場合はリストへ項目を追加し、同じ`ref`の項目があればその項目を更新します。`ai_gateways:`や同じGatewayを重複して貼り付けないでください。既存のモデル・プロバイダ・上流資格情報・ポリシーは保持します。
+3. 対象Gatewayの`models`にある**保護するすべてのモデル**へ、次の`access`を組み込みます。既存の`access`がある場合は、その認証方式・許可グループを確認し、意図するアクセス権になるよう編集します。
+
+```yaml
+# 既存モデルの ref や name と同じインデントで追加する
+access:
+  auth_strategies:
+    - !ref google-desktop-oidc
+  acls:
+    allow:
+      - claude-standard-users
+```
+
+`acls.allow`は、アクセスを許可するConsumer Groupの名前の一覧です。同梱例では`google-user-example`を`claude-standard-users`へ登録しています。利用者を増やすときは、ユーザーごとに別の`ref`・`name`・`sub`用環境変数を持つConsumerを追加し、グループの`consumers`にも参照を追加します。同じConsumerの`GOOGLE_USER_SUB`を別人の値に変更すると、既存ユーザーの登録を置き換えることになります。
+
+### 3.4. 差分を確認して適用する
+
+3.2で環境変数を設定したターミナルで実行します。`kongctl login`が未実施なら、先に対象環境の設定でログインします。普段`--profile`や`--region`を指定している場合は、差分確認と適用でも同じ指定を使ってください。
+
+```bash
+kongctl login
+
+# 未設定・空文字の場合は、ここで止めて値を確認する
+: "${CLIENT_ID:?Set CLIENT_ID to the Desktop OAuth client ID}"
+: "${GOOGLE_USER_SUB:?Set GOOGLE_USER_SUB to the approved Google user sub}"
+: "${OIDC_CACHE_TOKENS_SALT:?Set OIDC_CACHE_TOKENS_SALT to the saved salt}"
+: "${KONG_CONFIG:?Set KONG_CONFIG to the merged gateway YAML path}"
+
+kongctl diff --mode apply -f "$KONG_CONFIG"
+```
+
+差分に今回の認証方式、Consumer、グループ所属、各モデルの`access`が含まれ、対象Gatewayと既存設定への変更が意図どおりであることを確認します。続けて、同じ環境変数のまま適用します。
+
+```bash
+kongctl apply -f "$KONG_CONFIG"
+```
+
+`apply`が表示する変更を確認し、確認プロンプトに`yes`と入力します。適用対象は**3.3で編集した既存設定ファイル**です。同梱の部分設定例をそのまま単体で適用する手順ではありません。`apply`は作成・更新を行い、`sync`は削除も扱うため、この手順では`apply`を使います。[kongctlの差分確認と適用](https://developer.konghq.com/kongctl/declarative/#create-your-first-configuration)
+
+### 3.5. 認証・認可の動作を確認する
+
+- `auth_methods: [bearer]`でBearerトークンを受け付け、`consumer_claims: [[sub]]`、`consumer_by: [custom_id]`でユーザーを識別します。`consumer_optional: false`により、登録したConsumerに一致しないユーザーは拒否します。
 - `Authorization`と`x-api-key`の両方をログで秘匿し、上流へ転送する前に除去します。`hide_credentials`や追加のヘッダー制御で両方を処理できているか確認します。
-
-管理者はユーザーのGoogle署名と組織所属を独立して検証したうえでConsumerを登録します。ユーザーが送った`status`出力のコピーだけを本人確認の証拠にはできません。既存のemailマッピングから移行する場合、Consumer識別子とclaim設定を合わせて変更するか、移行用に別のauth strategyを用意します。
+- 既存のemailマッピングから移行する場合、Consumer識別子とclaim設定を合わせて変更します。同じAI Gateway内でOIDCを使うモデルは同じauth strategyを参照する必要があるため、既存のOIDC認証方式がある場合は、その更新とモデルの参照変更をまとめて計画します。[Kong AI Auth Strategies](https://developer.konghq.com/ai-gateway/entities/ai-auth-strategy/)
 
 **ローカルHelperのチェックはGatewayの認可を代行しません。** 利用者はHelperを使わず直接HTTPを送れます。同梱例はInternalアプリ、audience、承認済み`sub`の許可リストを使いますが、Gatewayで毎リクエスト`hd`を検査する設定は含みません。必要なら信頼できるサーバー側の検査を追加してください。ログイン画面の`hd`ヒントだけではアクセス制限になりません。[GoogleのID token検証仕様](https://developers.google.com/identity/openid-connect/openid-connect#validatinganidtoken)
 
-AI Gateway v2と通常のOIDCプラグインでは設定項目が異なります。導入環境で確認します。
+AI Gateway v2と通常のOIDCプラグインでは設定項目が異なります。導入環境の項目は次のコマンドで確認できます。疎通と拒否条件の検証は第5章へ進んでください。
 
 ```bash
 kongctl explain ai_gateways.auth_strategies.config --extended
@@ -83,26 +184,90 @@ kongctl explain ai_gateways.consumer_groups --extended
 
 ### Google Groups
 
-同梱例のConsumer Group所属は静的設定です。Google Groups連携を自動化する場合は、Directory APIまたはCloud Identity APIから管理側で取得し、Kongへ同期する処理が別途必要です。削除・退職時の反映、ページネーション、ネストした所属、API障害時の扱いも設計します。自動同期は本プロジェクトに含まれません。Googleの署名済みJWTに`groups`を追加したり、ユーザーが送るグループヘッダーを認可根拠にしたりしないでください。
+同梱例の`claude-standard-users`は**Kong側で管理するグループ**です。Google Groupsと同じ名前にしても所属は連携されません。まずはGoogle Groupsを設定せず、3.3でConsumerをこのグループへ登録することで、承認したユーザーのアクセスを設定できます。
+
+Google Groups連携を自動化する場合は、Directory APIまたはCloud Identity APIから管理側で取得し、Kongへ同期する処理が別途必要です。削除・退職時の反映、ページネーション、ネストした所属、API障害時の扱いも設計します。自動同期は本プロジェクトに含まれません。Googleの署名済みJWTに`groups`を追加したり、ユーザーが送るグループヘッダーを認可根拠にしたりしないでください。
 
 ## 4. Claude Codeを設定する
 
-[claude-settings.example.json](../examples/claude-settings.example.json)を利用者の`~/.claude/settings.json`や組織管理設定へマージし、既存のモデル設定等を保持します。
+この章は**Claude Codeを使う利用者の端末**で実施します。[claude-settings.example.json](../examples/claude-settings.example.json)を元に、利用者設定の`~/.claude/settings.json`を編集します。サンプルファイルをリポジトリ内で変更しただけではClaude Codeへ反映されません。組織が設定を一括管理している場合は、管理者が同じ項目を組織管理設定へ反映します。[Claude Codeの設定ファイル](https://code.claude.com/docs/en/settings)
 
-- `apiKeyHelper`を、インストール済みの`.venv/bin/google-claude-auth`コマンドの**絶対パス**へ置き換えます。空白を含むパスのために引用符を保持します。
-- `GOOGLE_CLAUDE_CLIENT_FILE`を初回ログインで使ったJSONの絶対パスへ置き換えます。JSON内の`$HOME`がシェルと同様に展開される前提にしないでください。
-- mode、account、domains、TTL、任意のcache directoryをログイン時と揃えます。設定が違うと別キャッシュになります。
-- `ANTHROPIC_BASE_URL`に`/v1/messages`を含まないGatewayのルート接頭辞を指定します。例の`https://gateway.example.com/v1/claude`なら、リクエスト先は`https://gateway.example.com/v1/claude/v1/messages`です。
-- モデル名にはGatewayで提供している名前を指定します。GatewayのAnthropic API形式で接続します。
+### 4.1. 設定ファイルを用意する
 
-shellとsettingsの競合する静的資格情報を取り除き、Claude Codeを起動します。
+第2章でログインした端末のリポジトリルートで実行します。既存の設定ファイルがある場合は日時付きでバックアップし、ない場合だけサンプルをコピーします。
+
+```bash
+mkdir -p "$HOME/.claude"
+if [ -f "$HOME/.claude/settings.json" ]; then
+  cp -p "$HOME/.claude/settings.json" \
+    "$HOME/.claude/settings.json.backup-$(date +%Y%m%d-%H%M%S)"
+else
+  cp examples/claude-settings.example.json "$HOME/.claude/settings.json"
+fi
+```
+
+続けて`~/.claude/settings.json`をエディタで開きます。既存ファイルの場合は、サンプルの`apiKeyHelper`を追加・更新し、サンプルの`env`内の各項目を既存の`env`へ追加・更新してください。`env`全体を置き換えず、既存のモデル設定、`permissions`、`hooks`や今回と無関係な環境変数は残します。同じキーを二重に書かないでください。
+
+### 4.2. サンプルの値を書き換える
+
+JSONの`env`内の値はすべて文字列として記載します。次の表のパス・URL・ドメイン・アカウントを自分の環境に合わせてください。
+
+| 編集するキー | 設定する値・取得元 |
+| --- | --- |
+| `apiKeyHelper` | 第2章でインストールした`.venv/bin/google-claude-auth`の絶対パスと、末尾の`token`。パスを囲む`\"`は残す |
+| `env.ANTHROPIC_BASE_URL` | Gateway管理者から案内されたHTTPSのベースURL。例：`https://gateway.example.com/v1/claude`。末尾に`/v1/messages`を付けない |
+| `env.GOOGLE_CLAUDE_CLIENT_FILE` | 第2章で使ったDesktopクライアントJSONの絶対パス。例：`/Users/example/.config/claude-google-sso/client_secret_desktop.json` |
+| `env.GOOGLE_CLAUDE_DOMAINS` | 第2章の`GOOGLE_CLAUDE_DOMAINS`と同じ組織ドメイン。例：`example.com` |
+| `env.GOOGLE_CLAUDE_ACCOUNT` | 第2章でログインしたアカウント。例：`user@example.com`。第2章でアカウントを固定しなかった場合は、このキーを削除する |
+| `env.GOOGLE_CLAUDE_AUTH_MODE` | 通常の導入では`"oauth"`のまま |
+| `env.CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | 第2章と同じ値。通常は`"300000"`のまま（5分） |
+
+HelperとクライアントJSONのパスは、第2章の環境変数が設定されたターミナルで次のように確認できます。
+
+```bash
+printf '%s/.venv/bin/google-claude-auth\n' "$(pwd -P)"
+printf '%s\n' "$GOOGLE_CLAUDE_CLIENT_FILE"
+```
+
+JSON内では`$HOME`や`~`がシェルと同様に展開される前提にせず、実際の絶対パスを記載してください。`GOOGLE_CLAUDE_CLIENT_FILE`にはOAuthクライアントJSONを指定し、トークンのキャッシュファイルを指定しないでください。任意の`GOOGLE_CLAUDE_CACHE_DIR`を第2章で設定した場合は、同じ絶対パスを`env`にも追加します。mode・client・account・domains・cache directoryを初回ログインと揃えることで、同じトークンキャッシュを利用できます。
+
+たとえば、macOSでリポジトリが`/Users/example/projects/claude-sso-helper-google-cloud-identity`にある場合、今回の設定項目は次のようになります。これはパス等を書き換えた例なので、そのまま貼り付けず、自分の値に合わせてください。既存の設定項目はこの例に追加して保持します。
+
+```json
+{
+  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token",
+  "env": {
+    "ANTHROPIC_BASE_URL": "https://gateway.example.com/v1/claude",
+    "GOOGLE_CLAUDE_AUTH_MODE": "oauth",
+    "GOOGLE_CLAUDE_CLIENT_FILE": "/Users/example/.config/claude-google-sso/client_secret_desktop.json",
+    "GOOGLE_CLAUDE_DOMAINS": "example.com",
+    "GOOGLE_CLAUDE_ACCOUNT": "user@example.com",
+    "CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "300000"
+  }
+}
+```
+
+第3章の`CLIENT_ID`、`GOOGLE_USER_SUB`、`OIDC_CACHE_TOKENS_SALT`はkongctl用なので、このJSONには追加しません。ProviderのAPIキーやGoogle ID tokenをJSONへ貼り付ける必要もありません。資格情報は`apiKeyHelper`が取得します。
+
+### 4.3. JSONを確認して起動する
+
+保存後にJSONの構文を確認します。正常なら何も表示されず終了します。エラーの場合は示された位置を修正してください。JSONにはコメントや末尾の余分なカンマを書けません。
+
+```bash
+.venv/bin/python -m json.tool "$HOME/.claude/settings.json" > /dev/null
+```
+
+既存の`settings.json`の`env`に`ANTHROPIC_API_KEY`や`ANTHROPIC_AUTH_TOKEN`があれば、Helperと競合するため削除します。OAuthモードでは、過去のgcloud設定などの`GOOGLE_CLAUDE_CLIENT_ID`が残っていれば削除してください。shell側の静的資格情報も解除して、起動済みのClaude Codeを終了してから起動します。
 
 ```bash
 unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
-claude
+unset GOOGLE_CLAUDE_CLIENT_ID
+claude --model 'YOUR-GATEWAY-MODEL'
 ```
 
-短いメッセージを送り、`/status`でGateway URLと認証元を確認します。`token`は非対話で動き、再認証が必要ならエラーを返します。同じ環境変数で`login`を再実行し、Claude Codeを再起動してください。[Claude Code公式のGateway設定](https://code.claude.com/docs/en/llm-gateway-connect)
+`YOUR-GATEWAY-MODEL`は、管理者から案内された**既存Modelのクライアント向けモデル名**に置き換えます。上流ProviderのモデルIDと同じとは限りません。既に組織のモデル設定で選択される場合は、通常の`claude`で起動できます。`ANTHROPIC_BASE_URL`だけではモデルは選択されません。[Claude Codeのモデル設定](https://code.claude.com/docs/en/model-config)
+
+短いメッセージを送り、`/status`でGateway URL・認証元・モデルを確認します。上記URLの例では、Messages APIのリクエスト先は`https://gateway.example.com/v1/claude/v1/messages`になります。`token`は非対話で動き、再認証が必要ならエラーを返します。同じ環境変数で`login`を再実行し、Claude Codeを再起動してください。[Claude Code公式のGateway設定](https://code.claude.com/docs/en/llm-gateway-connect)
 
 ## 5. 検証する
 
