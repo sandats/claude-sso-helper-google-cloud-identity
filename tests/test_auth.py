@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -91,6 +91,22 @@ class HelperTests(unittest.TestCase):
         with auth.locked_cache(self.cfg):
             auth.write_cache(self.cfg, value)
         return value
+
+    def run_helper(self, *argv):
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch.object(auth.Config, "from_env", return_value=self.cfg),
+            redirect_stdout(stdout),
+            redirect_stderr(stderr),
+        ):
+            result = auth.main(list(argv))
+        return result, stdout.getvalue(), stderr.getvalue()
+
+    def login_record(self, **claims):
+        return auth.cache_record(
+            {"id_token": self.token(**claims), "refresh_token": "refresh-new"},
+            self.claims(**claims),
+        )
 
     def test_real_signature_validation(self):
         self.assertEqual(auth.verify_token(self.token(), self.cfg)["sub"], "user-123")
@@ -196,7 +212,7 @@ class HelperTests(unittest.TestCase):
         )
         with (
             patch.object(auth.requests, "post", return_value=response),
-            self.assertRaises(auth.AuthError) as error,
+            self.assertRaises(auth.LoginRequired) as error,
         ):
             auth.token_request(self.cfg, {})
         self.assertNotIn("SECRET", str(error.exception))
@@ -223,7 +239,7 @@ class HelperTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(auth.AuthError):
                 auth.callback_code(path, "state")
 
-    def test_browser_flow_pkce_nonce_loopback_and_scopes(self):
+    def test_auto_login_browser_flow_pkce_nonce_loopback_and_scopes(self):
         captured = {}
         client_errors = []
 
@@ -257,11 +273,15 @@ class HelperTests(unittest.TestCase):
         with (
             patch.object(auth.webbrowser, "open", side_effect=browser),
             patch.object(auth, "token_request", side_effect=exchange),
-            redirect_stderr(io.StringIO()),
         ):
-            result = auth.authorize(self.cfg)
+            code, stdout, stderr = self.run_helper("token", "--auto-login")
+        self.assertEqual(code, 0, stderr)
         captured["thread"].join(timeout=5)
         self.assertFalse(client_errors)
+        result = auth.read_cache(self.cfg)
+        self.assertEqual(stdout, result["id_token"] + "\n")
+        self.assertIn("Open on this computer", stderr)
+        self.assertNotIn(result["id_token"], stderr)
         self.assertEqual(captured["scope"], ["openid email"])
         self.assertEqual(captured["access_type"], ["offline"])
         self.assertEqual(urlsplit(captured["redirect_uri"][0]).hostname, "127.0.0.1")
@@ -275,6 +295,175 @@ class HelperTests(unittest.TestCase):
         )
         self.assertEqual(captured["code_challenge"], [expected])
         self.assertEqual(result["refresh_token"], "new-refresh")
+
+    def test_auto_login_reuses_valid_cache_and_refreshes_without_browser(self):
+        for expiry in (int(time.time()) + 3600, 0):
+            with self.subTest(expiry=expiry):
+                cached = self.seed(expires_at=expiry)
+                with (
+                    patch.object(auth, "authorize") as login,
+                    patch.object(
+                        auth, "token_request", return_value={"id_token": cached["id_token"]}
+                    ) as refresh,
+                ):
+                    code, stdout, stderr = self.run_helper("token", "--auto-login")
+                self.assertEqual((code, stdout, stderr), (0, cached["id_token"] + "\n", ""))
+                self.assertEqual(refresh.call_count, int(expiry == 0))
+                login.assert_not_called()
+
+    def test_auto_login_replaces_incomplete_cache_and_supports_no_browser(self):
+        self.seed(refresh_token="")
+        record = self.login_record()
+        with patch.object(auth, "authorize", return_value=record) as login:
+            code, stdout, _ = self.run_helper("--auto-login", "--no-browser")
+        self.assertEqual((code, stdout), (0, record["id_token"] + "\n"))
+        login.assert_called_once_with(self.cfg, True)
+        self.assertEqual(auth.read_cache(self.cfg), record)
+
+    def test_auto_login_recovers_invalid_grant_only_when_enabled(self):
+        record = self.login_record()
+        response = SimpleNamespace(status_code=400, json=lambda: {"error": "invalid_grant"})
+        for enabled in (False, True):
+            with self.subTest(enabled=enabled):
+                cached = self.seed(expires_at=0)
+                with (
+                    patch.object(auth.requests, "post", return_value=response),
+                    patch.object(auth, "authorize", return_value=record) as login,
+                ):
+                    code, stdout, _ = self.run_helper(
+                        "token", *(["--auto-login"] if enabled else [])
+                    )
+                self.assertEqual(code, 0 if enabled else 1)
+                self.assertEqual(stdout, record["id_token"] + "\n" if enabled else "")
+                self.assertEqual(login.call_count, int(enabled))
+                self.assertEqual(auth.read_cache(self.cfg), record if enabled else cached)
+
+    def test_auto_login_does_not_hide_network_client_or_protocol_errors(self):
+        cases = [
+            auth.requests.ConnectionError("SECRET"),
+            SimpleNamespace(status_code=200, json=lambda: {"access_token": "SECRET"}),
+            SimpleNamespace(status_code=200, json=lambda: []),
+        ]
+        for status, error in (
+            (400, "invalid_client"),
+            (401, "unauthorized_client"),
+            (503, "server_error"),
+        ):
+            cases.append(
+                SimpleNamespace(status_code=status, json=lambda error=error: {"error": error})
+            )
+        for response in cases:
+            with self.subTest(response=response):
+                cached = self.seed(expires_at=0)
+                kwargs = (
+                    {"side_effect": response}
+                    if isinstance(response, Exception)
+                    else {"return_value": response}
+                )
+                with (
+                    patch.object(auth.requests, "post", **kwargs),
+                    patch.object(auth, "authorize") as login,
+                ):
+                    code, stdout, stderr = self.run_helper("token", "--auto-login")
+                self.assertEqual((code, stdout), (1, ""))
+                self.assertNotIn("SECRET", stderr)
+                login.assert_not_called()
+                self.assertEqual(auth.read_cache(self.cfg), cached)
+
+    def test_auto_login_does_not_hide_token_verification_errors(self):
+        for updates in ({"aud": "wrong"}, {"hd": "wrong"}, {"sub": "user-other"}):
+            with self.subTest(updates=updates):
+                cached = self.seed(id_token=self.token(**updates))
+                with patch.object(auth, "authorize") as login:
+                    code, stdout, _ = self.run_helper("token", "--auto-login")
+                self.assertEqual((code, stdout), (1, ""))
+                login.assert_not_called()
+                self.assertEqual(auth.read_cache(self.cfg), cached)
+
+    def test_auto_login_does_not_replace_corrupt_or_unsafe_cache(self):
+        self.seed()
+        path = self.cfg.cache_dir / "tokens.json"
+        for content, mode in (("not json", 0o600), ("{}", 0o644)):
+            with self.subTest(content=content, mode=mode):
+                path.write_text(content)
+                path.chmod(mode)
+                with patch.object(auth, "authorize") as login:
+                    code, stdout, _ = self.run_helper("token", "--auto-login")
+                self.assertEqual((code, stdout), (1, ""))
+                login.assert_not_called()
+                self.assertEqual(path.read_text(), content)
+
+    def test_failed_auto_login_keeps_cache_and_never_retries_login(self):
+        response = SimpleNamespace(status_code=400, json=lambda: {"error": "invalid_grant"})
+        for error in (
+            auth.AuthError("Google login was denied"),
+            auth.AuthError("Login timed out"),
+            auth.LoginRequired("Authorization code rejected"),
+            KeyboardInterrupt(),
+        ):
+            with self.subTest(error=error):
+                cached = self.seed(expires_at=0)
+                with (
+                    patch.object(auth.requests, "post", return_value=response),
+                    patch.object(auth, "authorize", side_effect=error) as login,
+                ):
+                    code, stdout, _ = self.run_helper("token", "--auto-login")
+                self.assertEqual(
+                    (code, stdout), (130 if isinstance(error, KeyboardInterrupt) else 1, "")
+                )
+                login.assert_called_once()
+                self.assertEqual(auth.read_cache(self.cfg), cached)
+
+    def test_auto_login_rejects_account_change_and_short_lived_tokens(self):
+        response = SimpleNamespace(status_code=400, json=lambda: {"error": "invalid_grant"})
+        for claims in ({"sub": "user-other"}, {"exp": int(time.time()) + 30}):
+            with self.subTest(claims=claims):
+                cached = self.seed(expires_at=0)
+                with (
+                    patch.object(auth.requests, "post", return_value=response),
+                    patch.object(auth, "authorize", return_value=self.login_record(**claims)),
+                ):
+                    code, stdout, _ = self.run_helper("token", "--auto-login")
+                self.assertEqual((code, stdout), (1, ""))
+                self.assertEqual(auth.read_cache(self.cfg), cached)
+
+    def test_auto_login_waits_for_existing_login_and_reuses_its_cache(self):
+        record = self.login_record()
+        with ExitStack() as owner:
+            owner.enter_context(auth.locked_cache(self.cfg))
+
+            def finish_login(_seconds):
+                auth.write_cache(self.cfg, record)
+                owner.close()
+
+            # Simulate 40 seconds of browser interaction while another caller holds the lock.
+            with (
+                patch.object(auth.time, "monotonic", side_effect=(0, 40)),
+                patch.object(auth.time, "sleep", side_effect=finish_login),
+                patch.object(auth, "authorize") as login,
+            ):
+                code, stdout, _ = self.run_helper("token", "--auto-login")
+        self.assertEqual((code, stdout), (0, record["id_token"] + "\n"))
+        login.assert_not_called()
+
+    def test_auto_login_lock_wait_is_bounded(self):
+        with auth.locked_cache(self.cfg):
+            with patch.object(auth.time, "monotonic", side_effect=(0, 301)):
+                code, stdout, stderr = self.run_helper("token", "--auto-login")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertIn("Another helper/login is running", stderr)
+
+    def test_auto_login_rejects_other_commands_and_gcloud_mode(self):
+        with patch.object(auth, "authorize") as login:
+            for command in ("login", "status", "logout"):
+                with self.subTest(command=command), self.assertRaises(SystemExit) as error:
+                    self.run_helper(command, "--auto-login")
+                self.assertEqual(error.exception.code, 2)
+            self.cfg.mode = "gcloud"
+            code, stdout, stderr = self.run_helper("token", "--auto-login")
+        self.assertEqual((code, stdout), (1, ""))
+        self.assertIn("requires OAuth mode", stderr)
+        login.assert_not_called()
 
     def test_cache_file_permissions_and_symlink_rejection(self):
         self.seed()

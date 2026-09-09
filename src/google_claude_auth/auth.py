@@ -1,7 +1,8 @@
 """Google user ID-token helper for Claude Code -> Kong (macOS/Linux, Python 3.10+).
 
 Install the project. Configure GOOGLE_CLAUDE_CLIENT_FILE (Desktop OAuth JSON)
-and GOOGLE_CLAUDE_DOMAINS, then run `login` once and use `token` in apiKeyHelper.
+and GOOGLE_CLAUDE_DOMAINS, then use `token --auto-login` in apiKeyHelper, or run
+`login` once before using the noninteractive `token` command.
 Only `token` writes a credential to stdout. See README.md for the gateway policy.
 """
 
@@ -35,6 +36,10 @@ TOKEN_URL = "https://oauth2.googleapis.com/token"
 
 class AuthError(Exception):
     """Safe, credential-free error text for stderr."""
+
+
+class LoginRequired(AuthError):
+    """Missing login or a rejected grant that browser authentication can replace."""
 
 
 @dataclass
@@ -159,7 +164,7 @@ def token_request(cfg, fields):
         raise AuthError("Google returned an invalid token response.")
     if response.status_code != 200 or data.get("error"):
         if data.get("error") == "invalid_grant":
-            raise AuthError("Google requires a new login (invalid_grant); run login again.")
+            raise LoginRequired("Google requires a new login (invalid_grant); run login again.")
         if data.get("error") in ("invalid_client", "unauthorized_client"):
             raise AuthError(
                 "Google rejected the OAuth client; check the Desktop client JSON and admin policy."
@@ -304,12 +309,12 @@ def private_directory(path):
 
 
 @contextmanager
-def locked_cache(cfg):
+def locked_cache(cfg, timeout=35):
     private_directory(cfg.cache_dir.parent)
     private_directory(cfg.cache_dir)
     fd = os.open(cfg.cache_dir / "auth.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a") as lock:
-        deadline = time.monotonic() + 35
+        deadline = time.monotonic() + timeout
         while True:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -359,7 +364,7 @@ def write_cache(cfg, value):
 def oauth_token(cfg):
     cached = read_cache(cfg)
     if not cached.get("id_token") or not cached.get("refresh_token") or not cached.get("sub"):
-        raise AuthError("No complete login cached; run login first.")
+        raise LoginRequired("No complete login cached; run login first.")
     # Cached expiry is only a refresh hint. Never output a token without verification.
     expiry = cached.get("expires_at", 0)
     if isinstance(expiry, (int, float)) and expiry > time.time() + cfg.min_validity:
@@ -412,19 +417,31 @@ def main(argv=None):
         "command", choices=("login", "token", "status", "logout"), nargs="?", default="token"
     )
     parser.add_argument(
+        "--auto-login",
+        action="store_true",
+        help="with token in OAuth mode, start browser login when no login is cached or refresh is revoked",
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="print login URL; still requires local loopback callback",
     )
     args = parser.parse_args(argv)
+    if args.auto_login and args.command != "token":
+        parser.error("--auto-login is only supported with token")
     try:
         cfg = Config.from_env()
         if cfg.mode == "gcloud":
+            if args.auto_login:
+                raise AuthError(
+                    "--auto-login requires OAuth mode; use gcloud auth login in gcloud mode."
+                )
             if args.command not in ("token", "status"):
                 raise AuthError("gcloud mode: manage login/logout with gcloud auth commands.")
             token = gcloud_token(cfg)
         else:
-            with locked_cache(cfg):
+            # Allow other auto-login callers to wait for the browser callback and token exchange.
+            with locked_cache(cfg, timeout=300 if args.auto_login else 35):
                 if args.command == "login":
                     write_cache(cfg, authorize(cfg, args.no_browser))
                     print(
@@ -439,7 +456,27 @@ def main(argv=None):
                         file=sys.stderr,
                     )
                     return 0
-                token = oauth_token(cfg)
+                try:
+                    token = oauth_token(cfg)
+                except LoginRequired:
+                    if not args.auto_login:
+                        raise
+                    print(
+                        "[google-auth] Login required; starting Google authentication.",
+                        file=sys.stderr,
+                    )
+                    previous = read_cache(cfg)
+                    record = authorize(cfg, args.no_browser)
+                    if previous.get("sub") and record["sub"] != previous["sub"]:
+                        raise AuthError(
+                            "Account changed during automatic login; run login explicitly to switch accounts."
+                        ) from None
+                    if record["expires_at"] <= time.time() + cfg.min_validity:
+                        raise AuthError(
+                            "Login ID token expires too soon for the helper TTL."
+                        ) from None
+                    write_cache(cfg, record)
+                    token = record["id_token"]
         if args.command == "token":
             print(token)
         else:

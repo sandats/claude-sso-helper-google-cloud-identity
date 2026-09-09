@@ -61,7 +61,7 @@ export CLAUDE_CODE_API_KEY_HELPER_TTL_MS='300000'
 
 `status` shows verified identity claims, never the token. Have the gateway administrator verify and enroll the user's `sub` under the approved-user policy. Follow the [setup guide](docs/SETUP-GUIDE.md) to configure the gateway. Section 4 provides [field-by-field editing and installation instructions](docs/SETUP-GUIDE.md#4-configure-claude-code) for [claude-settings.example.json](examples/claude-settings.example.json), including how to preserve existing settings. Replace every example path, account, domain and URL. Keep terminal and Claude Code helper settings consistent so they use the same token cache.
 
-Claude Code runs `token` without opening a browser. Its helper output must contain only the credential, and its default cache lifetime is five minutes. See [Claude Code gateway authentication](https://code.claude.com/docs/en/llm-gateway-connect#rotate-credentials-with-apikeyhelper).
+The example configures `token --auto-login`: when Claude Code requests a credential, the helper uses its cache or refreshes the token, and opens Google login only if no complete login is cached or Google rejects the refresh with `invalid_grant`. Users already enrolled at the gateway can complete their first login this way without running `login` separately. Account selection, consent and MFA still happen in the browser. Plain `token` remains noninteractive. Helper stdout contains only the credential, and Claude Code's default credential cache lifetime is five minutes. See [Claude Code gateway authentication](https://code.claude.com/docs/en/llm-gateway-connect#rotate-credentials-with-apikeyhelper).
 
 ## Configuration
 
@@ -75,7 +75,9 @@ Claude Code runs `token` without opening a browser. Its helper output must conta
 | `GOOGLE_CLAUDE_CACHE_DIR` | `~/.claude/google-sso`; separate cache per mode/client/domains/account |
 | `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` | `300000`; supported range `0`–`300000` milliseconds |
 
-Commands: `login`, `token` (default), `status`, and `logout`. `login --no-browser` prints the login URL but still needs a callback on the same computer within 180 seconds. `logout` deletes the local cache only.
+Commands: `login`, `token` (default), `status`, and `logout`. `token --auto-login` enables browser authentication on demand in OAuth mode; omit `--auto-login` for unattended use. `login --no-browser` and `token --auto-login --no-browser` print the login URL to stderr but still need a callback on the same computer within 180 seconds. `logout` deletes the local cache only; the next auto-login request can start a new browser login.
+
+Automatic login makes one browser attempt per invocation. Network, client configuration, token verification and corrupt/unsafe cache errors remain errors. Failed authentication preserves the previous cache. Automatic reauthentication must keep the cached Google subject; to intentionally change accounts, run `login` explicitly with the intended configuration. Simultaneous auto-login calls wait up to five minutes for the cache lock and reuse a completed login. See [automatic login setup and timeout behavior](docs/SETUP-GUIDE.md#automatic-login).
 
 ## Authorization and limitations
 

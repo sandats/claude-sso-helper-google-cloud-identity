@@ -68,6 +68,8 @@ export CLAUDE_CODE_API_KEY_HELPER_TTL_MS='300000'
 
 ブラウザで組織アカウントを選び、認証と同意を完了します。待機時間は3分です。ブラウザが開かなければ、表示されたURLを同じ端末のブラウザで開きます。`login --no-browser`も同じ端末へのコールバックが必要です。
 
+ここでは第3章で管理者が検証済みのユーザーを登録できるよう、明示的に初回ログインしています。既にユーザーが登録されている場合は、第4章の`token --auto-login`設定を使い、Claude Codeが最初に資格情報を要求するときにブラウザ認証を開始することもできます。
+
 `status`は署名検証済みの`iss / aud / sub / email / hd / exp`を表示し、トークン自体は表示しません。`aud`がJSONの`installed.client_id`、`hd`が許可する組織ドメインと一致することを確認します。出力には個人を識別する情報が含まれるため、公開Issueには貼り付けないでください。
 
 ## 3. Kongの認証と認可を設定する
@@ -214,7 +216,7 @@ JSONの`env`内の値はすべて文字列として記載します。次の表�
 
 | 編集するキー | 設定する値・取得元 |
 | --- | --- |
-| `apiKeyHelper` | 第2章でインストールした`.venv/bin/google-claude-auth`の絶対パスと、末尾の`token`。パスを囲む`\"`は残す |
+| `apiKeyHelper` | 第2章でインストールした`.venv/bin/google-claude-auth`の絶対パスと、末尾の`token --auto-login`。パスを囲む`\"`は残す。非対話で使う場合は`token`のみを指定する |
 | `env.ANTHROPIC_BASE_URL` | Gateway管理者から案内されたHTTPSのベースURL。例：`https://gateway.example.com/v1/claude`。末尾に`/v1/messages`を付けない |
 | `env.GOOGLE_CLAUDE_CLIENT_FILE` | 第2章で使ったDesktopクライアントJSONの絶対パス。例：`/Users/example/.config/claude-google-sso/client_secret_desktop.json` |
 | `env.GOOGLE_CLAUDE_DOMAINS` | 第2章の`GOOGLE_CLAUDE_DOMAINS`と同じ組織ドメイン。例：`example.com` |
@@ -235,7 +237,7 @@ JSON内では`$HOME`や`~`がシェルと同様に展開される前提にせず
 
 ```json
 {
-  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token",
+  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token --auto-login",
   "env": {
     "ANTHROPIC_BASE_URL": "https://gateway.example.com/v1/claude",
     "GOOGLE_CLAUDE_AUTH_MODE": "oauth",
@@ -267,7 +269,17 @@ claude --model 'YOUR-GATEWAY-MODEL'
 
 `YOUR-GATEWAY-MODEL`は、管理者から案内された**既存Modelのクライアント向けモデル名**に置き換えます。上流ProviderのモデルIDと同じとは限りません。既に組織のモデル設定で選択される場合は、通常の`claude`で起動できます。`ANTHROPIC_BASE_URL`だけではモデルは選択されません。[Claude Codeのモデル設定](https://code.claude.com/docs/en/model-config)
 
-短いメッセージを送り、`/status`でGateway URL・認証元・モデルを確認します。上記URLの例では、Messages APIのリクエスト先は`https://gateway.example.com/v1/claude/v1/messages`になります。`token`は非対話で動き、再認証が必要ならエラーを返します。同じ環境変数で`login`を再実行し、Claude Codeを再起動してください。[Claude Code公式のGateway設定](https://code.claude.com/docs/en/llm-gateway-connect)
+短いメッセージを送り、`/status`でGateway URL・認証元・モデルを確認します。上記URLの例では、Messages APIのリクエスト先は`https://gateway.example.com/v1/claude/v1/messages`になります。Googleログインのブラウザが開いた場合は、同じ端末でアカウント選択・同意・必要なMFAを完了します。Helperは検証済みID tokenをClaude Codeへ返し、処理を続行します。[Claude Code公式のGateway設定](https://code.claude.com/docs/en/llm-gateway-connect)
+
+#### 自動ログイン
+
+既存環境で有効にする場合は、リポジトリのルートで`.venv/bin/python -m pip install .`を実行して更新し、既存の`apiKeyHelper`の`token`の後ろへ`--auto-login`を追加してClaude Codeを再起動します。明示的なPythonインタープリター指定や、引用符で囲んだ絶対パスは保持してください。プロジェクト専用の設定を使う場合は、そのプロジェクトで`claude --settings ./.claude/settings.json`と起動します。
+
+`token --auto-login`は有効なキャッシュの利用とブラウザ不要のrefreshを優先します。キャッシュがない・不完全な場合、またはrefreshが`invalid_grant`を返した場合に、1回だけブラウザ認証を開始します。通信障害、OAuthクライアントの設定ミス、署名・ユーザー情報の検証エラー、キャッシュの破損・権限エラーでは認証画面を開かず、エラーを返します。認証失敗・キャンセル時は既存キャッシュを保持し、資格情報を出力しません。再認証では保存済みのGoogle `sub`と同じユーザーである必要があり、意図的にアカウントを変える場合は明示的に`login`を実行します。自動ログインでGatewayのユーザー登録や認可設定が変わることはありません。
+
+ブラウザからのコールバックの待機上限は180秒で、その後にトークン交換・検証を行います。自動ログインが同時に呼ばれた場合、後続の呼び出しは最大300秒キャッシュのロックを待ち、完了済みのログインを再利用します。ローカルで確認したClaude Code 2.1.266の実装では、`apiKeyHelper`の実行上限は600秒です。別バージョンを使う場合は互換性を確認してください。Claude Codeが10秒後に表示することのあるHelper遅延の通知は、実行タイムアウトではありません。`CLAUDE_CODE_API_KEY_HELPER_TTL_MS`は資格情報のキャッシュ時間であり、認証の待機時間ではありません。[Claude Codeの資格情報管理](https://code.claude.com/docs/en/authentication#credential-management)
+
+無人実行や手動ログインを前提とする場合は、`--auto-login`を付けません。`token`のみなら従来どおり非対話で動き、認証が必要なときは同じ環境変数で`login`を実行してClaude Codeを再起動します。`--auto-login`はOAuthモードの`token`専用で、`status`・`login`・`logout`やgcloudモードには使えません。`token --auto-login --no-browser`はURLをstderrへ表示し、同じ端末のブラウザで手動で開く場合に使えます。
 
 ## 5. 検証する
 

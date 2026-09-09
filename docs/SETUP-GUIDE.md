@@ -60,6 +60,8 @@ export CLAUDE_CODE_API_KEY_HELPER_TTL_MS='300000'
 
 Select the intended organization account and complete Google's login/consent flow. Login waits up to three minutes. If the browser does not open, open the printed URL on the same computer. `--no-browser` does not enable remote login.
 
+This explicit first login lets the administrator enroll the verified identity in section 3. Users whose identity is already enrolled can instead use section 4's `token --auto-login` setting to start browser authentication when Claude Code first requests a credential.
+
 `status` verifies and displays `iss`, `aud`, `sub`, `email`, `hd` and `exp`. Confirm that `aud` matches `installed.client_id`, and that the account and hosted domain are correct. Treat the output as personal identity data. If you pin an account here, also pin it in Claude Code settings.
 
 ## 3. Configure gateway authentication and authorization
@@ -206,7 +208,7 @@ Write every value inside `env` as a JSON string. Replace the paths, URL, domain,
 
 | Key to edit | Value and source |
 | --- | --- |
-| `apiKeyHelper` | Absolute path to the `.venv/bin/google-claude-auth` command installed in section 2, followed by `token`; preserve the escaped quotes (`\"`) around the path |
+| `apiKeyHelper` | Absolute path to the `.venv/bin/google-claude-auth` command installed in section 2, followed by `token --auto-login`; preserve the escaped quotes (`\"`) around the path. Use plain `token` for noninteractive operation |
 | `env.ANTHROPIC_BASE_URL` | HTTPS base URL supplied by the gateway administrator, such as `https://gateway.example.com/v1/claude`; do not append `/v1/messages` |
 | `env.GOOGLE_CLAUDE_CLIENT_FILE` | Absolute path to the Desktop client JSON used in section 2, such as `/Users/example/.config/claude-google-sso/client_secret_desktop.json` |
 | `env.GOOGLE_CLAUDE_DOMAINS` | Same organization domain as section 2's `GOOGLE_CLAUDE_DOMAINS`, such as `example.com` |
@@ -227,7 +229,7 @@ For example, with a macOS checkout at `/Users/example/projects/claude-sso-helper
 
 ```json
 {
-  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token",
+  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token --auto-login",
   "env": {
     "ANTHROPIC_BASE_URL": "https://gateway.example.com/v1/claude",
     "GOOGLE_CLAUDE_AUTH_MODE": "oauth",
@@ -259,7 +261,17 @@ claude --model 'YOUR-GATEWAY-MODEL'
 
 Replace `YOUR-GATEWAY-MODEL` with the **existing Model's client-facing name** supplied by the administrator; it may differ from the upstream Provider's model ID. If your organization's model settings already select it, start with plain `claude`. `ANTHROPIC_BASE_URL` alone does not select a model. See [Claude Code model configuration](https://code.claude.com/docs/en/model-config).
 
-Send a short prompt and check `/status` for the gateway URL, credential source, and model. With the example base URL, Messages requests go to `https://gateway.example.com/v1/claude/v1/messages`. The helper's `token` command stays noninteractive. If it requests a new login, run `login` from a terminal with the same configuration and restart Claude Code. See [Claude Code's gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect).
+Send a short prompt and check `/status` for the gateway URL, credential source, and model. With the example base URL, Messages requests go to `https://gateway.example.com/v1/claude/v1/messages`. If a browser opens for Google login, complete account selection, consent and any MFA on the same computer; the helper then returns the verified ID token to Claude Code. See [Claude Code's gateway configuration](https://code.claude.com/docs/en/llm-gateway-connect).
+
+#### Automatic login
+
+To enable this on an existing installation, update the package from the repository root with `.venv/bin/python -m pip install .`, append `--auto-login` to the existing `apiKeyHelper` command's `token` argument, and restart Claude Code. Preserve any explicit Python interpreter and quoted absolute paths already in the command. For a project-specific settings file, start in that project with `claude --settings ./.claude/settings.json`.
+
+`token --auto-login` first uses a valid cached token or refreshes it without browser interaction. It starts one browser login if the cache is missing/incomplete or refresh returns `invalid_grant`. It does not turn network, OAuth client, signature/identity validation, or corrupt/unsafe cache failures into login prompts. Failed or cancelled login keeps the previous cache and returns no credential. Reauthentication must retain the cached Google `sub`; use an explicit `login` to intentionally change accounts. Automatic login does not enroll users or change gateway authorization.
+
+The browser callback has a 180-second deadline, followed by token exchange and verification. Concurrent auto-login calls wait up to 300 seconds for the cache lock, then reuse the completed login. The locally inspected Claude Code 2.1.266 implementation allows 600 seconds for `apiKeyHelper`; check compatibility when using other versions. Claude Code may display a slow-helper notice after 10 seconds; that notice is not the execution timeout. `CLAUDE_CODE_API_KEY_HELPER_TTL_MS` controls credential caching, not the time allowed for login. See [Claude Code credential management](https://code.claude.com/docs/en/authentication#credential-management).
+
+For unattended use or to require manual login, omit `--auto-login`; plain `token` keeps its existing noninteractive behavior. If it requests authentication, run `login` with the same environment variables and restart Claude Code. `--auto-login` supports only the OAuth `token` command, not `status`, `login`, `logout`, or gcloud mode. `token --auto-login --no-browser` prints the URL to stderr for manual opening on the same computer.
 
 ## Validation
 

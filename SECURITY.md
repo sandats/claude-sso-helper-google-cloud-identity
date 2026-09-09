@@ -17,6 +17,8 @@ The helper stores ID and refresh tokens as **plaintext**, with directory mode `0
 
 `logout` removes only the current configuration's local token file. It does not revoke Google consent, already-issued ID tokens, or Claude Code's cached credential. Stop Claude Code, remove the user's gateway authorization, and revoke Google app access as appropriate. Verify authorization propagation and revocation latency in your deployment.
 
+With `token --auto-login`, a later credential request can open a browser to authenticate again after logout or an `invalid_grant` refresh response. Automatic reauthentication retains the cached Google subject, validates the normal login claims and nonce, and saves the replacement only after success. An explicit `login` is required to intentionally switch the cached identity. Network, configuration, verification and unsafe/corrupt cache errors do not trigger automatic login. Without the flag, `token` remains noninteractive.
+
 Google certificate retrieval happens on each verification. If retrieval fails, the helper fails without returning a credential. It never falls back to an opaque access token or an unverified JWT.
 
 ## Support scope
