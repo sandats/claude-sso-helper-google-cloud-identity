@@ -1,0 +1,10 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="google-claude-auth login" type="GoApplicationRunConfiguration" factoryName="Go Application">
+    <module name="claude-sso-helper-google-cloud-identity" />
+    <working_directory value="$PROJECT_DIR$" />
+    <parameters value="login" />
+    <kind value="DIRECTORY" />
+    <directory value="$PROJECT_DIR$/cmd/google-claude-auth" />
+    <method v="2" />
+  </configuration>
+</component>
