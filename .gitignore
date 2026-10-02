@@ -27,3 +27,6 @@ verified-claims*.json
 verification-results*.json
 *.pem
 *.key
+
+# Go build output
+/bin/

@@ -67,3 +67,32 @@ jobs:
           google-claude-auth --help
           google-claude-verify-gateway --help
           python -m google_claude_auth --help
+
+  go:
+    name: Go on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Check Go formatting
+        if: runner.os != 'Windows'
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        run: go vet ./...
+      - name: Run offline protocol and security tests
+        run: go test -count=1 ./...
+      - name: Build commands
+        run: |
+          go build -trimpath -o bin/ ./cmd/...
+          bin/google-claude-auth --help
+          bin/google-claude-verify-gateway --help
+        shell: bash
