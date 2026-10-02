@@ -8,7 +8,7 @@ Google Workspace / Cloud Identityの組織アカウントでログインし、Go
 
 ## 前提
 
-- macOSまたはLinux、Python 3.10以上、同じ端末上のブラウザ。
+- macOS、LinuxまたはWindowsと、同じ端末上のブラウザ。ソースからビルドする場合はGo 1.24以上が必要です。リリース済みのバイナリを使う場合、ランタイムは不要です。
 - 対象のWorkspace / Cloud Identity組織配下にあるGoogle Cloudプロジェクト。
 - **Internal**のOAuthアプリと、**Desktop app**型クライアントのJSON。
 - `apiKeyHelper`を利用できるClaude Codeと、Anthropic Messages API形式で接続できるHTTPSのGateway。
@@ -25,7 +25,7 @@ Google Workspace / Cloud Identityの組織アカウントでログインし、Go
 
 本ガイドでは、この既存環境へGoogle SSOを追加します。CP・Model・Provider・DPの新規構築は含みません。未構築の場合は先に[Kong AI Gatewayのセットアップ](https://developer.konghq.com/ai-gateway/)を完了してください。管理者は第3章で使用する既存のkongctl YAMLを用意し、利用者へ第4章で設定する**GatewayのベースURLと利用可能なモデル名**を案内します。ベースURLはモデルへのリクエスト先であり、Konnectの管理API URLではありません。
 
-Windowsネイティブ、SSH先、Cloud Shell、別端末のブラウザを使うログインには対応していません。以下はリポジトリのルートで実行し、`example.com`、アカウント、パス、Gateway URLを置き換えます。
+SSH先、Cloud Shell、別端末のブラウザを使うログインには対応していません。コマンド例はmacOS/Linuxのシェル向けです。Windowsの場合は[Windows（PowerShell）](#windowspowershell)を参照してください。以下はリポジトリのルートで実行し、`example.com`、アカウント、パス、Gateway URLを置き換えます。
 
 ## 1. GoogleのDesktop OAuthクライアントを作る
 
@@ -52,8 +52,7 @@ chmod 700 "$HOME/.config/claude-google-sso"
 install -m 600 '/absolute/path/downloaded-client.json' \
   "$HOME/.config/claude-google-sso/client_secret_desktop.json"
 
-python3 -m venv .venv
-.venv/bin/python -m pip install .
+go build -trimpath -o bin/ ./cmd/...
 
 export GOOGLE_CLAUDE_AUTH_MODE='oauth'
 unset GOOGLE_CLAUDE_CLIENT_ID
@@ -62,15 +61,40 @@ export GOOGLE_CLAUDE_DOMAINS='example.com'
 export GOOGLE_CLAUDE_ACCOUNT='user@example.com'
 export CLAUDE_CODE_API_KEY_HELPER_TTL_MS='300000'
 
-.venv/bin/google-claude-auth login
-.venv/bin/google-claude-auth status
+bin/google-claude-auth login
+bin/google-claude-auth status
 ```
+
+`go build`は`google-claude-auth`と`google-claude-verify-gateway`を`bin/`へ出力します。ビルドの代わりに[リリース済みのバイナリ](../README.md#releases)をダウンロードした場合は、`SHA256SUMS`で検証したうえで`bin/google-claude-auth`として保存し、`chmod +x bin/google-claude-auth`を実行します。
 
 ブラウザで組織アカウントを選び、認証と同意を完了します。待機時間は3分です。ブラウザが開かなければ、表示されたURLを同じ端末のブラウザで開きます。`login --no-browser`も同じ端末へのコールバックが必要です。
 
 ここでは第3章で管理者が検証済みのユーザーを登録できるよう、明示的に初回ログインしています。既にユーザーが登録されている場合は、第4章の`token --auto-login`設定を使い、Claude Codeが最初に資格情報を要求するときにブラウザ認証を開始することもできます。
 
 `status`は署名検証済みの`iss / aud / sub / email / hd / exp`を表示し、トークン自体は表示しません。`aud`がJSONの`installed.client_id`、`hd`が許可する組織ドメインと一致することを確認します。出力には個人を識別する情報が含まれるため、公開Issueには貼り付けないでください。
+
+### Windows（PowerShell）
+
+Windowsでは、同じ内容をPowerShellで実行します。Windowsではファイルの所有者やモードの検査は行わず、ユーザープロファイルのアクセス制御に依存します。
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.config\claude-google-sso" | Out-Null
+Copy-Item 'C:\path\to\downloaded-client.json' "$HOME\.config\claude-google-sso\client_secret_desktop.json"
+
+go build -trimpath -o bin\ .\cmd\...
+
+$env:GOOGLE_CLAUDE_AUTH_MODE = 'oauth'
+Remove-Item Env:GOOGLE_CLAUDE_CLIENT_ID -ErrorAction SilentlyContinue
+$env:GOOGLE_CLAUDE_CLIENT_FILE = "$HOME\.config\claude-google-sso\client_secret_desktop.json"
+$env:GOOGLE_CLAUDE_DOMAINS = 'example.com'
+$env:GOOGLE_CLAUDE_ACCOUNT = 'user@example.com'
+$env:CLAUDE_CODE_API_KEY_HELPER_TTL_MS = '300000'
+
+.\bin\google-claude-auth.exe login
+.\bin\google-claude-auth.exe status
+```
+
+第4章の設定ファイルは`%USERPROFILE%\.claude\settings.json`です。JSON内のWindowsのパスは、`C:/Users/example/claude-sso-helper-google-cloud-identity/bin/google-claude-auth.exe`のようにスラッシュで書くと、バックスラッシュのエスケープが不要になります。
 
 ## 3. Kongの認証と認可を設定する
 
@@ -216,7 +240,7 @@ JSONの`env`内の値はすべて文字列として記載します。次の表�
 
 | 編集するキー | 設定する値・取得元 |
 | --- | --- |
-| `apiKeyHelper` | 第2章でインストールした`.venv/bin/google-claude-auth`の絶対パスと、末尾の`token --auto-login`。パスを囲む`\"`は残す。非対話で使う場合は`token`のみを指定する |
+| `apiKeyHelper` | 第2章でビルドした`bin/google-claude-auth`の絶対パスと、末尾の`token --auto-login`。パスを囲む`\"`は残す。非対話で使う場合は`token`のみを指定する |
 | `env.ANTHROPIC_BASE_URL` | Gateway管理者から案内されたHTTPSのベースURL。例：`https://gateway.example.com/v1/claude`。末尾に`/v1/messages`を付けない |
 | `env.GOOGLE_CLAUDE_CLIENT_FILE` | 第2章で使ったDesktopクライアントJSONの絶対パス。例：`/Users/example/.config/claude-google-sso/client_secret_desktop.json` |
 | `env.GOOGLE_CLAUDE_DOMAINS` | 第2章の`GOOGLE_CLAUDE_DOMAINS`と同じ組織ドメイン。例：`example.com` |
@@ -227,7 +251,7 @@ JSONの`env`内の値はすべて文字列として記載します。次の表�
 HelperとクライアントJSONのパスは、第2章の環境変数が設定されたターミナルで次のように確認できます。
 
 ```bash
-printf '%s/.venv/bin/google-claude-auth\n' "$(pwd -P)"
+printf '%s/bin/google-claude-auth\n' "$(pwd -P)"
 printf '%s\n' "$GOOGLE_CLAUDE_CLIENT_FILE"
 ```
 
@@ -237,7 +261,7 @@ JSON内では`$HOME`や`~`がシェルと同様に展開される前提にせず
 
 ```json
 {
-  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token --auto-login",
+  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/bin/google-claude-auth\" token --auto-login",
   "env": {
     "ANTHROPIC_BASE_URL": "https://gateway.example.com/v1/claude",
     "GOOGLE_CLAUDE_AUTH_MODE": "oauth",
@@ -253,10 +277,10 @@ JSON内では`$HOME`や`~`がシェルと同様に展開される前提にせず
 
 ### 4.3. JSONを確認して起動する
 
-保存後にJSONの構文を確認します。正常なら何も表示されず終了します。エラーの場合は示された位置を修正してください。JSONにはコメントや末尾の余分なカンマを書けません。
+保存後に、[jq](https://jqlang.org/)などのJSONバリデーターで構文を確認します。正常なら何も表示されず終了します。エラーの場合は示された位置を修正してください。JSONにはコメントや末尾の余分なカンマを書けません。
 
 ```bash
-.venv/bin/python -m json.tool "$HOME/.claude/settings.json" > /dev/null
+jq empty "$HOME/.claude/settings.json"
 ```
 
 既存の`settings.json`の`env`に`ANTHROPIC_API_KEY`や`ANTHROPIC_AUTH_TOKEN`があれば、Helperと競合するため削除します。OAuthモードでは、過去のgcloud設定などの`GOOGLE_CLAUDE_CLIENT_ID`が残っていれば削除してください。shell側の静的資格情報も解除して、起動済みのClaude Codeを終了してから起動します。
@@ -273,7 +297,7 @@ claude --model 'YOUR-GATEWAY-MODEL'
 
 #### 自動ログイン
 
-既存環境で有効にする場合は、リポジトリのルートで`.venv/bin/python -m pip install .`を実行して更新し、既存の`apiKeyHelper`の`token`の後ろへ`--auto-login`を追加してClaude Codeを再起動します。明示的なPythonインタープリター指定や、引用符で囲んだ絶対パスは保持してください。プロジェクト専用の設定を使う場合は、そのプロジェクトで`claude --settings ./.claude/settings.json`と起動します。
+既存環境で有効にする場合は、Helperのバイナリを現在のバージョンへビルドし直すか置き換え、既存の`apiKeyHelper`の`token`の後ろへ`--auto-login`を追加してClaude Codeを再起動します。引用符で囲んだ絶対パスは保持してください。プロジェクト専用の設定を使う場合は、そのプロジェクトで`claude --settings ./.claude/settings.json`と起動します。
 
 `token --auto-login`は有効なキャッシュの利用とブラウザ不要のrefreshを優先します。キャッシュがない・不完全な場合、またはrefreshが`invalid_grant`を返した場合に、1回だけブラウザ認証を開始します。通信障害、OAuthクライアントの設定ミス、署名・ユーザー情報の検証エラー、キャッシュの破損・権限エラーでは認証画面を開かず、エラーを返します。認証失敗・キャンセル時は既存キャッシュを保持し、資格情報を出力しません。再認証では保存済みのGoogle `sub`と同じユーザーである必要があり、意図的にアカウントを変える場合は明示的に`login`を実行します。自動ログインでGatewayのユーザー登録や認可設定が変わることはありません。
 
@@ -284,16 +308,16 @@ claude --model 'YOUR-GATEWAY-MODEL'
 ## 5. 検証する
 
 ```bash
-.venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/python -m pytest -v
+go vet ./...
+go test -count=1 ./...
 ```
 
-オフラインテストではテスト用のRSA鍵を生成し、実際の署名検証を行います。Googleの応答はテスト用に置き換え、実アカウントやモデルAPIを使用しません。PKCEのテストには端末内のloopback通信が必要です。
+オフラインテストではテスト用のRSA鍵を生成し、実際の署名検証を行います。Googleのエンドポイントはローカルのテストサーバーに置き換え、実アカウントやモデルAPIを使用しません。PKCEのテストには端末内のloopback通信が必要です。
 
 GoogleログインとGateway設定が完了したら、任意で疎通確認を実行できます。**正常ケースは最大8出力トークンのモデルAPI利用を伴います。**
 
 ```bash
-.venv/bin/google-claude-verify-gateway \
+bin/google-claude-verify-gateway \
   --base-url 'https://gateway.example.com/v1/claude' \
   --model 'YOUR-GATEWAY-MODEL'
 ```
@@ -308,13 +332,13 @@ GoogleログインとGateway設定が完了したら、任意で疎通確認を�
 | --- | --- |
 | 保存先 | `~/.claude/google-sso/<設定別ハッシュ>/tokens.json` |
 | 保存内容 | ID tokenとrefresh tokenを**平文**で保存。OS Keychain連携なし |
-| 権限 | ディレクトリ0700、ファイル0600、排他ロックと原子的置換 |
+| 権限 | macOS/Linuxはディレクトリ0700、ファイル0600。Windowsはユーザープロファイルのアクセス制御に依存。いずれも排他ロックと原子的置換 |
 | Helper TTL | 既定300000ミリ秒。設定できる範囲は0〜300000 |
 | 更新条件 | 残り有効期間がTTL＋60秒以下の場合に更新 |
 | 鍵の取得 | 検証ごとにGoogleからHTTPS取得。取得できなければ資格情報を返さず終了 |
 
 ```bash
-.venv/bin/google-claude-auth logout
+bin/google-claude-auth logout
 ```
 
 削除するのは現在の設定のローカルキャッシュだけです。Googleへの同意や発行済みID token、Claude Codeのキャッシュは失効しません。利用停止時はClaude Codeを終了し、Gatewayの許可削除と必要なGoogleアプリ利用取消しを行い、反映時間を確認します。[Security](../SECURITY.md)

@@ -1,16 +1,14 @@
-# Local Python environment and generated files
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.ruff_cache/
-.coverage
-htmlcov/
+# Build output and local tooling
+/bin/
 build/
 dist/
-*.egg-info/
+.cache/
+.venv/
 .DS_Store
+
+# IDE: shared settings live in .vscode/ and .run/
+.idea/
+*.iml
 
 # Local configuration, credentials and identity records
 .env
@@ -27,6 +25,3 @@ verified-claims*.json
 verification-results*.json
 *.pem
 *.key
-
-# Go build output
-/bin/
