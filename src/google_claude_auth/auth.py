@@ -8,7 +8,6 @@ Only `token` writes a credential to stdout. See README.md for the gateway policy
 
 import argparse
 import base64
-import fcntl
 import hashlib
 import json
 import os
@@ -29,6 +28,14 @@ import requests
 from google.auth import exceptions as google_errors
 from google.auth.transport.requests import Request
 from google.oauth2 import id_token
+
+IS_WINDOWS = os.name == "nt"
+if IS_WINDOWS:
+    import msvcrt
+else:
+    import fcntl
+
+O_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -303,40 +310,66 @@ def cache_record(data, claims, previous=None):
 def private_directory(path):
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     info = path.lstat()
+    if IS_WINDOWS:
+        # POSIX の所有者/モード検査は不可。ユーザープロファイルの ACL に依存する。
+        if path.is_symlink() or not stat.S_ISDIR(info.st_mode):
+            raise AuthError("Cache directory must be a directory, not a symlink.")
+        return
     if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
         raise AuthError("Cache directory must be an owned directory, not a symlink.")
     path.chmod(0o700)
+
+def _try_lock(lock):
+    if IS_WINDOWS:
+        lock.seek(0)
+        msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock(lock):
+    if IS_WINDOWS:
+        try:
+            lock.seek(0)
+            msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
 
 
 @contextmanager
 def locked_cache(cfg, timeout=35):
     private_directory(cfg.cache_dir.parent)
     private_directory(cfg.cache_dir)
-    fd = os.open(cfg.cache_dir / "auth.lock", os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    fd = os.open(cfg.cache_dir / "auth.lock", os.O_CREAT | os.O_RDWR | O_NOFOLLOW, 0o600)
     with os.fdopen(fd, "a") as lock:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _try_lock(lock)
                 break
-            except BlockingIOError:
+            except OSError:
                 if time.monotonic() >= deadline:
                     raise AuthError(
                         "Another helper/login is running; retry after it completes."
                     ) from None
                 time.sleep(0.1)
-        yield
+        try:
+            yield
+        finally:
+            _unlock(lock)
 
 
 def read_cache(cfg):
     path = cfg.cache_dir / "tokens.json"
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | O_NOFOLLOW)
     except FileNotFoundError:
         return {}
     with os.fdopen(fd) as stream:
         info = os.fstat(stream.fileno())
-        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+        if not stat.S_ISREG(info.st_mode):
+            raise AuthError("Token cache must be a regular file.")
+        if not IS_WINDOWS and (info.st_uid != os.getuid() or info.st_mode & 0o077):
             raise AuthError("Token cache must be an owned regular file with mode 0600.")
         try:
             value = json.load(stream)
@@ -351,7 +384,8 @@ def write_cache(cfg, value):
     fd, name = tempfile.mkstemp(prefix=".tokens-", dir=cfg.cache_dir)
     try:
         with os.fdopen(fd, "w") as stream:
-            os.fchmod(stream.fileno(), 0o600)
+            if not IS_WINDOWS:
+                os.fchmod(stream.fileno(), 0o600)
             json.dump(value, stream)
             stream.flush()
             os.fsync(stream.fileno())
