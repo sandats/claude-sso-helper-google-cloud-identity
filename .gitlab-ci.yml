@@ -1,5 +1,5 @@
-# GitLab CI/CD equivalent of .github/workflows/ci.yml.
-# Jobs use Linux Docker runners; Windows and macOS Go code is cross-compiled and vetted.
+# GitLab CI/CD: test on merge requests, release on the default branch.
+# Jobs use Linux Docker runners; every platform's binaries are cross-compiled.
 
 workflow:
   rules:
@@ -11,75 +11,52 @@ workflow:
     - if: $CI_PIPELINE_SOURCE == "web"
 
 stages:
-  - quality
   - test
+  - build
+  - release
 
 default:
+  image: golang:1.24
   interruptible: true
   timeout: 10 minutes
-
-variables:
-  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
-  PIP_DISABLE_PIP_VERSION_CHECK: "1"
-  GOPATH: "$CI_PROJECT_DIR/.cache/go"
-  GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
-
-.python:
-  cache:
-    key:
-      files: [pyproject.toml]
-      prefix: pip-$PYTHON_VERSION
-    paths: [.cache/pip]
-
-quality:
-  extends: .python
-  stage: quality
-  image: python:3.14-slim
-  variables:
-    PYTHON_VERSION: "3.14"
-  script:
-    - python -m pip install -e '.[dev]'
-    - python -m ruff check .
-    - python -m ruff format --check .
-    - python -m build
-    - python -m json.tool examples/claude-settings.example.json > /dev/null
-
-python-tests:
-  extends: .python
-  stage: test
-  image: python:$PYTHON_VERSION-slim
-  parallel:
-    matrix:
-      - PYTHON_VERSION: ["3.10", "3.11", "3.12", "3.13", "3.14"]
-  script:
-    - python -m pip install '.[dev]'
-    - python -m pip check
-    - python -m pytest -v
-    # Check installed commands outside the checkout.
-    - cd /tmp
-    - google-claude-auth --help
-    - google-claude-verify-gateway --help
-    - python -m google_claude_auth --help
-
-go:
-  stage: test
-  image: golang:1.24
   cache:
     key:
       files: [go.mod]
       prefix: go
     paths: [.cache/go, .cache/go-build]
+
+variables:
+  GOPATH: "$CI_PROJECT_DIR/.cache/go"
+  GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+
+test:
+  stage: test
   script:
     - test -z "$(gofmt -l $(git ls-files '*.go'))"
     - go vet ./...
+    - GOOS=windows go vet ./...
+    - GOOS=darwin go vet ./...
     - go test -count=1 ./...
-    - go build -trimpath -o bin/ ./cmd/...
-    - bin/google-claude-auth --help
-    - bin/google-claude-verify-gateway --help
-    # Platform-specific code (Windows LockFileEx, macOS flock) must compile and vet.
-    - |
-      for target in windows/amd64 darwin/arm64 darwin/amd64; do
-        echo "== $target"
-        GOOS=${target%/*} GOARCH=${target#*/} go vet ./...
-        GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./...
-      done
+
+# Downloadable binaries for review; not a release.
+build:
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+  script:
+    - VERSION="dev-$CI_COMMIT_SHORT_SHA" ci/build.sh
+    - dist/google-claude-auth_dev-${CI_COMMIT_SHORT_SHA}_linux_$(go env GOARCH) --version
+  artifacts:
+    paths: [dist/]
+    expire_in: 1 week
+
+# Every pipeline on the default branch (a merge) publishes the next patch release.
+# Run a pipeline manually with RELEASE_VERSION=1.2.0 to choose the version instead.
+release:
+  stage: release
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  interruptible: false
+  resource_group: release
+  script:
+    - ci/gitlab-release.sh

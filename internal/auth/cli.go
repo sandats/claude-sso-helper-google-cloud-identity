@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const usage = "usage: google-claude-auth [-h] [--auto-login] [--no-browser] [{login,token,status,logout}]"
+// Version is set at build time with -ldflags "-X .../internal/auth.Version=1.2.3".
+var Version = "dev"
+
+const usage = "usage: google-claude-auth [-h] [--version] [--auto-login] [--no-browser] [{login,token,status,logout}]"
 
 const help = usage + `
 
@@ -24,6 +27,7 @@ positional arguments:
 
 options:
   -h, --help     show this help message and exit
+  --version      show the helper version and exit
   --auto-login   with token in OAuth mode, start browser login when no login is
                  cached or refresh is revoked
   --no-browser   print login URL; still requires local loopback callback
@@ -39,6 +43,7 @@ type cliArgs struct {
 	command   string
 	autoLogin bool
 	noBrowser bool
+	version   bool
 }
 
 func parseArgs(argv []string) (cliArgs, string, bool) {
@@ -51,6 +56,8 @@ func parseArgs(argv []string) (cliArgs, string, bool) {
 			flagsDone = true
 		case !flagsDone && (arg == "-h" || arg == "--help"):
 			return args, "", true
+		case !flagsDone && arg == "--version":
+			args.version = true
 		case !flagsDone && arg == "--auto-login":
 			args.autoLogin = true
 		case !flagsDone && arg == "--no-browser":
@@ -82,6 +89,10 @@ func Main(ctx context.Context, argv []string, stdout, stderr io.Writer) int {
 	args, parseError, showHelp := parseArgs(argv)
 	if showHelp {
 		io.WriteString(stdout, help)
+		return 0
+	}
+	if args.version && parseError == "" {
+		fmt.Fprintf(stdout, "google-claude-auth %s\n", Version)
 		return 0
 	}
 	if parseError != "" {
