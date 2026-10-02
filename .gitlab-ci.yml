@@ -1,0 +1,85 @@
+# GitLab CI/CD equivalent of .github/workflows/ci.yml.
+# Jobs use Linux Docker runners; Windows and macOS Go code is cross-compiled and vetted.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Avoid duplicate branch pipelines while a merge request is open.
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+stages:
+  - quality
+  - test
+
+default:
+  interruptible: true
+  timeout: 10 minutes
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.cache/pip"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+  GOPATH: "$CI_PROJECT_DIR/.cache/go"
+  GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+
+.python:
+  cache:
+    key:
+      files: [pyproject.toml]
+      prefix: pip-$PYTHON_VERSION
+    paths: [.cache/pip]
+
+quality:
+  extends: .python
+  stage: quality
+  image: python:3.14-slim
+  variables:
+    PYTHON_VERSION: "3.14"
+  script:
+    - python -m pip install -e '.[dev]'
+    - python -m ruff check .
+    - python -m ruff format --check .
+    - python -m build
+    - python -m json.tool examples/claude-settings.example.json > /dev/null
+
+python-tests:
+  extends: .python
+  stage: test
+  image: python:$PYTHON_VERSION-slim
+  parallel:
+    matrix:
+      - PYTHON_VERSION: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+  script:
+    - python -m pip install '.[dev]'
+    - python -m pip check
+    - python -m pytest -v
+    # Check installed commands outside the checkout.
+    - cd /tmp
+    - google-claude-auth --help
+    - google-claude-verify-gateway --help
+    - python -m google_claude_auth --help
+
+go:
+  stage: test
+  image: golang:1.24
+  cache:
+    key:
+      files: [go.mod]
+      prefix: go
+    paths: [.cache/go, .cache/go-build]
+  script:
+    - test -z "$(gofmt -l $(git ls-files '*.go'))"
+    - go vet ./...
+    - go test -count=1 ./...
+    - go build -trimpath -o bin/ ./cmd/...
+    - bin/google-claude-auth --help
+    - bin/google-claude-verify-gateway --help
+    # Platform-specific code (Windows LockFileEx, macOS flock) must compile and vet.
+    - |
+      for target in windows/amd64 darwin/arm64 darwin/amd64; do
+        echo "== $target"
+        GOOS=${target%/*} GOARCH=${target#*/} go vet ./...
+        GOOS=${target%/*} GOARCH=${target#*/} go build -o /dev/null ./...
+      done
