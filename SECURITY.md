@@ -2,7 +2,7 @@
 
 ## Reporting a vulnerability
 
-Do not include credentials or a working exploit against a real deployment in a public issue. Use the repository's **Security → Advisories → Report a vulnerability** option when available. If private reporting is unavailable, open an issue asking for a private contact channel without disclosing exploit details or affected organizations. This project does not promise a response SLA.
+Do not include credentials or a working exploit against a real deployment in a public issue. Use the hosting platform's private reporting option when available: **Security → Advisories → Report a vulnerability** on GitHub, or a **confidential issue** on GitLab. If private reporting is unavailable, open an issue asking for a private contact channel without disclosing exploit details or affected organizations. This project does not promise a response SLA.
 
 ## Trust boundaries
 
@@ -13,7 +13,7 @@ Do not include credentials or a working exploit against a real deployment in a p
 
 ## Local credentials and revocation
 
-The helper stores ID and refresh tokens as **plaintext**, with directory mode `0700`, file mode `0600`, a file lock and atomic replacement. It has no OS keychain integration. The user's account, machine and backups must be trusted. Keep OAuth client files and token caches outside the checkout.
+The helper stores ID and refresh tokens as **plaintext**, with a file lock and atomic replacement. On macOS and Linux it enforces an owned directory with mode `0700` and an owned file with mode `0600`, and refuses symlinks. On Windows it cannot check POSIX ownership or modes: it refuses symlinks and other reparse points and otherwise relies on the user profile's ACLs. It has no OS keychain integration. The user's account, machine and backups must be trusted. Keep OAuth client files and token caches outside the checkout.
 
 `logout` removes only the current configuration's local token file. It does not revoke Google consent, already-issued ID tokens, or Claude Code's cached credential. Stop Claude Code, remove the user's gateway authorization, and revoke Google app access as appropriate. Verify authorization propagation and revocation latency in your deployment.
 
@@ -23,4 +23,4 @@ Google certificate retrieval happens on each verification. If retrieval fails, t
 
 ## Support scope
 
-Security fixes target the latest code on `main`; there are no maintained older release branches. Automated tests exercise protocol and local storage behavior. They do not certify a deployment, an organization's Google policies, or Kong authorization settings. See the [setup guide](docs/SETUP-GUIDE.md#validation).
+Security fixes target the latest code on `main`; there are no maintained older release branches. Released binaries are not code-signed; verify downloads against the release's `SHA256SUMS`. Automated tests exercise protocol and local storage behavior. They do not certify a deployment, an organization's Google policies, or Kong authorization settings. See the [setup guide](docs/SETUP-GUIDE.md#validation).

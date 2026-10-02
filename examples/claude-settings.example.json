@@ -1,5 +1,5 @@
 {
-  "apiKeyHelper": "\"/ABS/PATH/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token --auto-login",
+  "apiKeyHelper": "\"/ABS/PATH/claude-sso-helper-google-cloud-identity/bin/google-claude-auth\" token --auto-login",
   "env": {
     "ANTHROPIC_BASE_URL": "https://gateway.example.com/v1/claude",
     "GOOGLE_CLAUDE_AUTH_MODE": "oauth",

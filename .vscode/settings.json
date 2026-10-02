@@ -1,0 +1,18 @@
+{
+  "files.eol": "\n",
+  "files.insertFinalNewline": true,
+  "files.trimTrailingWhitespace": true,
+  "[go]": {
+    "editor.defaultFormatter": "golang.go",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+  "[markdown]": {
+    "editor.wordWrap": "on"
+  },
+  "go.formatTool": "gofmt",
+  "go.testFlags": ["-count=1"],
+  "go.vetOnSave": "package"
+}

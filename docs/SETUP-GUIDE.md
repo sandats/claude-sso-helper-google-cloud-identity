@@ -2,11 +2,11 @@
 
 [日本語](SETUP-GUIDE.ja.md) · [Project overview](../README.md)
 
-This guide connects a local Claude Code installation to an existing Kong gateway using a dedicated Google Desktop OAuth client. Run shell commands from the repository root on the same macOS/Linux computer as the browser. Replace `example.com`, `user@example.com`, all paths, and the gateway URL.
+This guide connects a local Claude Code installation to an existing Kong gateway using a dedicated Google Desktop OAuth client. Run shell commands from the repository root on the same computer as the browser. The examples use a macOS/Linux shell; see [Windows (PowerShell)](#windows-powershell) for Windows. Replace `example.com`, `user@example.com`, all paths, and the gateway URL.
 
 ## Prerequisites
 
-Use macOS or Linux with Python 3.10+, a browser on the same computer, and Claude Code with `apiKeyHelper` support. You need a Google Cloud project under the intended Workspace / Cloud Identity organization and an Internal Desktop OAuth client, created in section 1. Your Kong deployment must support Google OIDC authentication and user authorization; the example targets AI Gateway v2. The conventional [Kong OIDC plugin requires Enterprise](https://developer.konghq.com/plugins/openid-connect/). This project does not include gateway or model access entitlements.
+Use macOS, Linux or Windows with a browser on the same computer, and Claude Code with `apiKeyHelper` support. You need a Google Cloud project under the intended Workspace / Cloud Identity organization and an Internal Desktop OAuth client, created in section 1. Your Kong deployment must support Google OIDC authentication and user authorization; the example targets AI Gateway v2. The conventional [Kong OIDC plugin requires Enterprise](https://developer.konghq.com/plugins/openid-connect/). This project does not include gateway or model access entitlements. Building the helper from source needs Go 1.24+; a released binary needs no runtime.
 
 **An existing, configured CP, Model, and Provider are required before starting this procedure.** The gateway administrator must confirm the following:
 
@@ -44,8 +44,7 @@ chmod 700 "$HOME/.config/claude-google-sso"
 install -m 600 '/absolute/path/downloaded-client.json' \
   "$HOME/.config/claude-google-sso/client_secret_desktop.json"
 
-python3 -m venv .venv
-.venv/bin/python -m pip install .
+go build -trimpath -o bin/ ./cmd/...
 
 export GOOGLE_CLAUDE_AUTH_MODE='oauth'
 unset GOOGLE_CLAUDE_CLIENT_ID
@@ -54,15 +53,40 @@ export GOOGLE_CLAUDE_DOMAINS='example.com'
 export GOOGLE_CLAUDE_ACCOUNT='user@example.com'
 export CLAUDE_CODE_API_KEY_HELPER_TTL_MS='300000'
 
-.venv/bin/google-claude-auth login
-.venv/bin/google-claude-auth status
+bin/google-claude-auth login
+bin/google-claude-auth status
 ```
+
+`go build` writes `google-claude-auth` and `google-claude-verify-gateway` to `bin/`. If you downloaded a [released binary](../README.md#releases) instead, verify it against `SHA256SUMS`, save it as `bin/google-claude-auth`, and run `chmod +x bin/google-claude-auth`.
 
 Select the intended organization account and complete Google's login/consent flow. Login waits up to three minutes. If the browser does not open, open the printed URL on the same computer. `--no-browser` does not enable remote login.
 
 This explicit first login lets the administrator enroll the verified identity in section 3. Users whose identity is already enrolled can instead use section 4's `token --auto-login` setting to start browser authentication when Claude Code first requests a credential.
 
 `status` verifies and displays `iss`, `aud`, `sub`, `email`, `hd` and `exp`. Confirm that `aud` matches `installed.client_id`, and that the account and hosted domain are correct. Treat the output as personal identity data. If you pin an account here, also pin it in Claude Code settings.
+
+### Windows (PowerShell)
+
+On Windows, run the equivalent commands in PowerShell. The helper relies on your user profile's access controls instead of POSIX file modes.
+
+```powershell
+New-Item -ItemType Directory -Force "$HOME\.config\claude-google-sso" | Out-Null
+Copy-Item 'C:\path\to\downloaded-client.json' "$HOME\.config\claude-google-sso\client_secret_desktop.json"
+
+go build -trimpath -o bin\ .\cmd\...
+
+$env:GOOGLE_CLAUDE_AUTH_MODE = 'oauth'
+Remove-Item Env:GOOGLE_CLAUDE_CLIENT_ID -ErrorAction SilentlyContinue
+$env:GOOGLE_CLAUDE_CLIENT_FILE = "$HOME\.config\claude-google-sso\client_secret_desktop.json"
+$env:GOOGLE_CLAUDE_DOMAINS = 'example.com'
+$env:GOOGLE_CLAUDE_ACCOUNT = 'user@example.com'
+$env:CLAUDE_CODE_API_KEY_HELPER_TTL_MS = '300000'
+
+.\bin\google-claude-auth.exe login
+.\bin\google-claude-auth.exe status
+```
+
+In section 4, the settings file is `%USERPROFILE%\.claude\settings.json`. Write Windows paths in JSON with forward slashes, such as `C:/Users/example/claude-sso-helper-google-cloud-identity/bin/google-claude-auth.exe`, so that no backslash escaping is needed.
 
 ## 3. Configure gateway authentication and authorization
 
@@ -208,7 +232,7 @@ Write every value inside `env` as a JSON string. Replace the paths, URL, domain,
 
 | Key to edit | Value and source |
 | --- | --- |
-| `apiKeyHelper` | Absolute path to the `.venv/bin/google-claude-auth` command installed in section 2, followed by `token --auto-login`; preserve the escaped quotes (`\"`) around the path. Use plain `token` for noninteractive operation |
+| `apiKeyHelper` | Absolute path to the `bin/google-claude-auth` binary built in section 2, followed by `token --auto-login`; preserve the escaped quotes (`\"`) around the path. Use plain `token` for noninteractive operation |
 | `env.ANTHROPIC_BASE_URL` | HTTPS base URL supplied by the gateway administrator, such as `https://gateway.example.com/v1/claude`; do not append `/v1/messages` |
 | `env.GOOGLE_CLAUDE_CLIENT_FILE` | Absolute path to the Desktop client JSON used in section 2, such as `/Users/example/.config/claude-google-sso/client_secret_desktop.json` |
 | `env.GOOGLE_CLAUDE_DOMAINS` | Same organization domain as section 2's `GOOGLE_CLAUDE_DOMAINS`, such as `example.com` |
@@ -219,7 +243,7 @@ Write every value inside `env` as a JSON string. Replace the paths, URL, domain,
 To find the helper and client JSON paths, run these commands in the terminal with section 2's environment variables:
 
 ```bash
-printf '%s/.venv/bin/google-claude-auth\n' "$(pwd -P)"
+printf '%s/bin/google-claude-auth\n' "$(pwd -P)"
 printf '%s\n' "$GOOGLE_CLAUDE_CLIENT_FILE"
 ```
 
@@ -229,7 +253,7 @@ For example, with a macOS checkout at `/Users/example/projects/claude-sso-helper
 
 ```json
 {
-  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/.venv/bin/google-claude-auth\" token --auto-login",
+  "apiKeyHelper": "\"/Users/example/projects/claude-sso-helper-google-cloud-identity/bin/google-claude-auth\" token --auto-login",
   "env": {
     "ANTHROPIC_BASE_URL": "https://gateway.example.com/v1/claude",
     "GOOGLE_CLAUDE_AUTH_MODE": "oauth",
@@ -245,10 +269,10 @@ Section 3's `CLIENT_ID`, `GOOGLE_USER_SUB`, and `OIDC_CACHE_TOKENS_SALT` are for
 
 ### 4.3. Validate JSON and start Claude Code
 
-Save the file and check its JSON syntax. Success produces no output; correct the reported location if validation fails. JSON does not allow comments or trailing commas.
+Save the file and check its JSON syntax with any JSON validator, such as [jq](https://jqlang.org/). Success produces no output; correct the reported location if validation fails. JSON does not allow comments or trailing commas.
 
 ```bash
-.venv/bin/python -m json.tool "$HOME/.claude/settings.json" > /dev/null
+jq empty "$HOME/.claude/settings.json"
 ```
 
 Remove `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` from the existing settings `env`, if present, because they conflict with the helper. In OAuth mode, also remove any `GOOGLE_CLAUDE_CLIENT_ID` left over from a previous gcloud setup. Clear static credentials from the shell, close any running Claude Code session, and start again:
@@ -265,7 +289,7 @@ Send a short prompt and check `/status` for the gateway URL, credential source, 
 
 #### Automatic login
 
-To enable this on an existing installation, update the package from the repository root with `.venv/bin/python -m pip install .`, append `--auto-login` to the existing `apiKeyHelper` command's `token` argument, and restart Claude Code. Preserve any explicit Python interpreter and quoted absolute paths already in the command. For a project-specific settings file, start in that project with `claude --settings ./.claude/settings.json`.
+To enable this on an existing installation, rebuild or replace the helper binary with a current version, append `--auto-login` to the existing `apiKeyHelper` command's `token` argument, and restart Claude Code. Preserve the quoted absolute path already in the command. For a project-specific settings file, start in that project with `claude --settings ./.claude/settings.json`.
 
 `token --auto-login` first uses a valid cached token or refreshes it without browser interaction. It starts one browser login if the cache is missing/incomplete or refresh returns `invalid_grant`. It does not turn network, OAuth client, signature/identity validation, or corrupt/unsafe cache failures into login prompts. Failed or cancelled login keeps the previous cache and returns no credential. Reauthentication must retain the cached Google `sub`; use an explicit `login` to intentionally change accounts. Automatic login does not enroll users or change gateway authorization.
 
@@ -278,14 +302,14 @@ For unattended use or to require manual login, omit `--auto-login`; plain `token
 Run offline tests first:
 
 ```bash
-.venv/bin/python -m pip install -e '.[dev]'
-.venv/bin/python -m pytest -v
+go vet ./...
+go test -count=1 ./...
 ```
 
 After login and gateway configuration, an optional probe makes three real requests. The valid request consumes model usage with up to eight output tokens. It prints only case names, HTTP statuses and pass/fail results:
 
 ```bash
-.venv/bin/google-claude-verify-gateway \
+bin/google-claude-verify-gateway \
   --base-url 'https://gateway.example.com/v1/claude' \
   --model 'YOUR-GATEWAY-MODEL'
 ```
@@ -309,7 +333,7 @@ export GOOGLE_CLAUDE_ACCOUNT='user@example.com'
 export GOOGLE_CLAUDE_DOMAINS='example.com'
 export GOOGLE_CLAUDE_CLIENT_ID='YOUR-VERIFIED-GCLOUD-AUDIENCE.apps.googleusercontent.com'
 export CLAUDE_CODE_API_KEY_HELPER_TTL_MS='0'
-.venv/bin/google-claude-auth status
+bin/google-claude-auth status
 ```
 
 Obtain the expected audience from your reviewed gcloud setup; do not trust an arbitrary token's decoded payload to configure the gateway. Shared gcloud audiences alone cannot identify users who consented to your dedicated app. The helper does not control gcloud's refresh timing and rejects near-expiry tokens. Manage login/logout with gcloud. Use `oauth` mode for the primary setup.
@@ -330,7 +354,7 @@ Obtain the expected audience from your reviewed gcloud setup; do not trust an ar
 | Google verification unavailable | Network access to Google's certificate endpoint and local clock |
 
 ```bash
-.venv/bin/google-claude-auth logout
+bin/google-claude-auth logout
 ```
 
 This removes only the current configuration's local cache. Stop Claude Code and remove gateway access for user offboarding; Google consent and issued tokens are not revoked by this command. See [SECURITY.md](../SECURITY.md).

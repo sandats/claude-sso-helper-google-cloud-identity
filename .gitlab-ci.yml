@@ -1,0 +1,62 @@
+# GitLab CI/CD: test on merge requests, release on the default branch.
+# Jobs use Linux Docker runners; every platform's binaries are cross-compiled.
+
+workflow:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    # Avoid duplicate branch pipelines while a merge request is open.
+    - if: $CI_COMMIT_BRANCH && $CI_OPEN_MERGE_REQUESTS
+      when: never
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+    - if: $CI_PIPELINE_SOURCE == "web"
+
+stages:
+  - test
+  - build
+  - release
+
+default:
+  image: golang:1.24
+  interruptible: true
+  timeout: 10 minutes
+  cache:
+    key:
+      files: [go.mod]
+      prefix: go
+    paths: [.cache/go, .cache/go-build]
+
+variables:
+  GOPATH: "$CI_PROJECT_DIR/.cache/go"
+  GOCACHE: "$CI_PROJECT_DIR/.cache/go-build"
+
+test:
+  stage: test
+  script:
+    - test -z "$(gofmt -l $(git ls-files '*.go'))"
+    - go vet ./...
+    - GOOS=windows go vet ./...
+    - GOOS=darwin go vet ./...
+    - go test -count=1 ./...
+
+# Downloadable binaries for review; not a release.
+build:
+  stage: build
+  rules:
+    - if: $CI_COMMIT_BRANCH != $CI_DEFAULT_BRANCH
+  script:
+    - VERSION="dev-$CI_COMMIT_SHORT_SHA" ci/build.sh
+    - dist/google-claude-auth_dev-${CI_COMMIT_SHORT_SHA}_linux_$(go env GOARCH) --version
+  artifacts:
+    paths: [dist/]
+    expire_in: 1 week
+
+# Every pipeline on the default branch (a merge) publishes the next patch release.
+# Run a pipeline manually with RELEASE_VERSION=1.2.0 to choose the version instead.
+release:
+  stage: release
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+  interruptible: false
+  resource_group: release
+  script:
+    - ci/gitlab-release.sh
